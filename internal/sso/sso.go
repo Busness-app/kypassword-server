@@ -25,6 +25,7 @@ type SSOSettings struct {
 	IssuerURL     string `json:"issuerUrl"`
 	ClientID      string `json:"clientId"`
 	ClientSecret  string `json:"clientSecret,omitempty"`
+	RedirectURI   string `json:"redirectUri,omitempty"`
 	AutoProvision bool   `json:"autoProvision"`
 }
 

@@ -31,12 +31,16 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	secret := req.AuthSecret
-	if secret == "" {
-		secret = req.Password
+	var u users.User
+	var err error
+
+	if req.AuthSecret != "" {
+		u, err = s.users.VerifyAuth(req.Username, req.AuthSecret)
+	}
+	if (err != nil || req.AuthSecret == "") && req.Password != "" {
+		u, err = s.users.VerifyAuth(req.Username, req.Password)
 	}
 
-	u, err := s.users.VerifyAuth(req.Username, secret)
 	if err != nil {
 		_, _ = s.audit.Log("auth.login_failed", "", "", clientIP(r), "failed login for "+req.Username)
 		http.Error(w, "invalid credentials", http.StatusUnauthorized)
@@ -163,7 +167,10 @@ func (s *Server) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
 	if secure {
 		scheme = "https"
 	}
-	redirectURI := fmt.Sprintf("%s://%s/api/auth/oidc/callback", scheme, r.Host)
+	redirectURI := settings.RedirectURI
+	if redirectURI == "" {
+		redirectURI = fmt.Sprintf("%s://%s/api/auth/oidc/callback", scheme, r.Host)
+	}
 
 	authURL, err := url.Parse(disc.AuthorizationEndpoint)
 	if err != nil {
@@ -241,7 +248,10 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 	if secure {
 		scheme = "https"
 	}
-	redirectURI := fmt.Sprintf("%s://%s/api/auth/oidc/callback", scheme, r.Host)
+	redirectURI := settings.RedirectURI
+	if redirectURI == "" {
+		redirectURI = fmt.Sprintf("%s://%s/api/auth/oidc/callback", scheme, r.Host)
+	}
 
 	tok, err := sso.ExchangeCode(r.Context(), disc.TokenEndpoint, settings.ClientID, settings.ClientSecret, code, redirectURI, codeVerifier)
 	if err != nil {

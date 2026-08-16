@@ -50,9 +50,10 @@ export function LoginPage({ onLoginSuccess }: Props) {
       // 2. Derive auth secret client-side
       const authSecret = await deriveAuthSecret(password, params.salt, params.iterations);
 
-      // 3. Authenticate with authSecret
+      // 3. Authenticate with authSecret (and password fallback)
       const res = await postJSON<{ ok: boolean; user: any }>("/api/auth/login", {
         username,
+        password,
         authSecret,
       });
 
