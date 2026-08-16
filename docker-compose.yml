@@ -1,0 +1,21 @@
+services:
+  kypassword-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: kypassword-server
+    restart: unless-stopped
+    ports:
+      - "5877:5877"
+    environment:
+      - PORT=5877
+      - DATA_DIR=/kypassword/data
+      - CONFIG_DIR=/kypassword/config
+      - RETENTION_DAYS=90
+    volumes:
+      - kypassword_data:/kypassword/data
+      - kypassword_config:/kypassword/config
+
+volumes:
+  kypassword_data:
+  kypassword_config:

@@ -69,8 +69,17 @@ func main() {
 	rootMux.Handle("/auth/", srv.Routes())
 
 	// Static SPA file serving
-	webDir := "./frontend/dist"
-	if _, err := os.Stat(webDir); err == nil {
+	webDir := os.Getenv("WEB_DIR")
+	if webDir == "" {
+		if _, err := os.Stat("/app/frontend/dist"); err == nil {
+			webDir = "/app/frontend/dist"
+		} else if _, err := os.Stat("./frontend/dist"); err == nil {
+			webDir = "./frontend/dist"
+		} else if _, err := os.Stat("./dist"); err == nil {
+			webDir = "./dist"
+		}
+	}
+	if webDir != "" {
 		fs := http.FileServer(http.Dir(webDir))
 		rootMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 			path := filepath.Join(webDir, filepath.Clean(r.URL.Path))
