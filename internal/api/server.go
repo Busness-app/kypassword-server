@@ -233,6 +233,14 @@ func isRequestSecure(r *http.Request) bool {
 	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }
 
+func requestHost(r *http.Request) string {
+	if fwd := r.Header.Get("X-Forwarded-Host"); fwd != "" {
+		parts := strings.Split(fwd, ",")
+		return strings.TrimSpace(parts[0])
+	}
+	return r.Host
+}
+
 // currentUser extracts the user from the session cookie or Bearer token.
 func (s *Server) currentUser(r *http.Request) (users.User, bool) {
 	token := ""

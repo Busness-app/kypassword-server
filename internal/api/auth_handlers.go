@@ -169,7 +169,7 @@ func (s *Server) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	redirectURI := settings.RedirectURI
 	if redirectURI == "" {
-		redirectURI = fmt.Sprintf("%s://%s/api/auth/oidc/callback", scheme, r.Host)
+		redirectURI = fmt.Sprintf("%s://%s/api/auth/oidc/callback", scheme, requestHost(r))
 	}
 
 	authURL, err := url.Parse(disc.AuthorizationEndpoint)
@@ -250,7 +250,7 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	redirectURI := settings.RedirectURI
 	if redirectURI == "" {
-		redirectURI = fmt.Sprintf("%s://%s/api/auth/oidc/callback", scheme, r.Host)
+		redirectURI = fmt.Sprintf("%s://%s/api/auth/oidc/callback", scheme, requestHost(r))
 	}
 
 	tok, err := sso.ExchangeCode(r.Context(), disc.TokenEndpoint, settings.ClientID, settings.ClientSecret, code, redirectURI, codeVerifier)
