@@ -1,9 +1,23 @@
 # KyPassword Server
 
-KyPassword Server is a web based KeePass server with mobile clients and browser plugins.
-The point of the server is to have a web interface to manage the KeePass file and sync across devices with atomic updates to prevent change collitions.
+KyPassword Server is a zero-knowledge KeePass v4 management and synchronization server with web interface, mobile clients, and browser plugins.
 
-Please see the css directory and fonts directory for look and feel.
+## Core Capabilities & Architecture
+
+1. **Zero-Knowledge KeePass v4 Vault Storage**: Server stores encrypted KDBX v4 vaults and wrapped key envelopes. The server never receives raw master passwords, plaintext vault keys, or unencrypted credential data.
+2. **Key Custody & Envelopes**: Vault master key (256-bit) is wrapped client-side into password-wrapped, paper-recovery-wrapped, and device-wrapped envelopes using PBKDF2/Argon2 + AES-GCM. Changing passwords re-wraps the envelope without re-encrypting the full KDBX.
+3. **Atomic Sync & Conflict Preservation**: Optimistic concurrency via ETag / version check (`If-Match: "{version}"`). Conflicting uploads are rejected and preserved in `conflicts/` for client deconfliction.
+4. **90-Day Version History & Rollback**: Automatic version snapshots with 90-day retention policy and one-click rollback.
+5. **KySignOn SSO & Directory Replication**: Interoperable with KySignOn and standard OIDC/PKCE IdPs (`/api/auth/oidc/login`, `/api/sync/webhook`).
+6. **Native Device Pairing**: 90-second PIN and QR code protocol (`/api/devices/pairing/*`) for mobile apps and browser extensions.
+7. **Tamper-Evident Audit Logging**: Cryptographic hash-chained audit trail (`/api/audit/*`).
+8. **KySecurity Patina Interface**: React + TypeScript frontend using Space Grotesk, IBM Plex Mono, and Patina dark theme.
+
+## Verification
+
+- Backend: `go test ./...`
+- Frontend: `npm run build` in `frontend/`
+- Daemon build: `go build -o ./kypassword-server ./cmd/server/main.go`
 
 # Ponytail, lazy senior dev mode
 
