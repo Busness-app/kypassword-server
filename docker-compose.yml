@@ -1,21 +1,46 @@
+name: kypassword-server
+
 services:
   kypassword-server:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: kypassword-server
+    container_name: KyPassword-Server
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+
+    networks:
+      kypost-net:
+        ipv4_address: ${KYPASSWORD_IP:-10.89.0.4}
+
     ports:
-      - "5877:5877"
+      - "${KYPASSWORD_BIND:-127.0.0.1}:5877:5877"
+
     environment:
-      - PORT=5877
-      - DATA_DIR=/kypassword/data
-      - CONFIG_DIR=/kypassword/config
-      - RETENTION_DAYS=90
+      PORT: 5877
+      DATA_DIR: /kypassword/data
+      CONFIG_DIR: /kypassword/config
+      WEB_DIR: /app/frontend/dist
+      RETENTION_DAYS: ${RETENTION_DAYS:-90}
+      TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-127.0.0.1/32,10.89.0.0/24,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}
+
     volumes:
       - kypassword_data:/kypassword/data
       - kypassword_config:/kypassword/config
 
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:5877/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
 volumes:
   kypassword_data:
   kypassword_config:
+
+networks:
+  kypost-net:
+    name: ${KYPOST_NETWORK:-kypost-net}
+    external: true
