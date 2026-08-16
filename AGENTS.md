@@ -18,6 +18,7 @@ KyPassword Server is a zero-knowledge KeePass v4 management and synchronization 
 - Backend: `go test ./...`
 - Frontend: `npm run build` in `frontend/`
 - Daemon build: `go build -o ./kypassword-server ./cmd/server/main.go`
+- Docker build: `docker build -t kypassword-server:latest .`
 
 # Ponytail, lazy senior dev mode
 
