@@ -1,4 +1,35 @@
 import * as kdbxweb from "kdbxweb";
+// @ts-ignore
+import argon2 from "argon2-browser/dist/argon2-bundled.min.js";
+
+// Register Argon2 implementation with kdbxweb so KDBX4 Argon2 vaults can be opened and saved
+kdbxweb.CryptoEngine.setArgon2Impl(
+  async (
+    password: ArrayBuffer,
+    salt: ArrayBuffer,
+    memory: number,
+    iterations: number,
+    length: number,
+    parallelism: number,
+    type: any,
+    version: any
+  ): Promise<ArrayBuffer> => {
+    const res = await argon2.hash({
+      pass: new Uint8Array(password),
+      salt: new Uint8Array(salt),
+      time: iterations,
+      mem: memory,
+      hashLen: length,
+      parallelism: parallelism,
+      type: type,
+      version: version,
+    });
+    return (res.hash.buffer as ArrayBuffer).slice(
+      res.hash.byteOffset,
+      res.hash.byteOffset + res.hash.byteLength
+    );
+  }
+);
 
 export type VaultEntry = {
   uuid: string;
