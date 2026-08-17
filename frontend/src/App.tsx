@@ -10,7 +10,8 @@ import { LoginPage } from "./pages/LoginPage";
 import { VaultPage } from "./pages/VaultPage";
 import { SecuritySettings } from "./pages/SecuritySettings";
 import { AdminPanel } from "./pages/AdminPanel";
-import { Shield, KeyRound, Settings, LogOut, Lock, CheckCircle2 } from "lucide-react";
+import { HistoryModal } from "./components/HistoryModal";
+import { Shield, KeyRound, Settings, LogOut, Lock, CheckCircle2, History, RotateCcw } from "lucide-react";
 import "./styles/styles.css";
 
 type User = {
@@ -44,6 +45,7 @@ export function App() {
 
   // SSO unlock modal state
   const [showUnlockModal, setShowUnlockModal] = useState(false);
+  const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [unlockPassword, setUnlockPassword] = useState("");
   const [unlockError, setUnlockError] = useState("");
   const [unlocking, setUnlocking] = useState(false);
@@ -278,7 +280,9 @@ export function App() {
       </header>
 
       {/* Main Content View */}
-      {vault ? (
+      {navTab === "admin" && user.role === "admin" ? (
+        <AdminPanel />
+      ) : vault ? (
         navTab === "vault" ? (
           <VaultPage
             vault={vault}
@@ -287,36 +291,42 @@ export function App() {
             onExport={handleExportKdbx}
             onReload={() => initVault(user)}
           />
-        ) : navTab === "security" && vaultKey ? (
+        ) : (
           <SecuritySettings
             user={user}
-            vaultKey={vaultKey}
+            vaultKey={vaultKey!}
             onUserUpdated={checkAuth}
           />
-        ) : (
-          <AdminPanel />
         )
       ) : (
         <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <div style={{ textAlign: "center", maxWidth: "400px", padding: "2rem" }}>
+          <div style={{ textAlign: "center", maxWidth: "440px", padding: "2rem" }}>
             <Lock size={48} color="var(--accent)" style={{ marginBottom: "1rem" }} />
             <h2>Vault is Locked</h2>
             <p style={{ color: "var(--ink-muted)", marginBottom: "1.5rem" }}>
               Enter your master password or paper recovery code to unlock your encrypted KeePass vault.
             </p>
-            <button className="btn btn-primary" onClick={() => setShowUnlockModal(true)}>
-              Unlock Vault
-            </button>
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+              <button className="btn btn-primary" onClick={() => setShowUnlockModal(true)}>
+                <Lock size={16} /> Unlock Vault
+              </button>
+              <button className="btn btn-secondary" onClick={() => setShowHistoryModal(true)}>
+                <RotateCcw size={16} /> Version History & Rollback
+              </button>
+            </div>
           </div>
         </div>
       )}
 
       {/* Unlock Modal for SSO sessions or locked vaults */}
       {showUnlockModal ? (
-        <div className="modal-overlay">
-          <div className="modal-card">
+        <div className="modal-overlay" onClick={() => setShowUnlockModal(false)}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <h3>Unlock KeePass Vault</h3>
+              <button className="btn btn-quiet btn-sm" onClick={() => setShowUnlockModal(false)}>
+                ✕
+              </button>
             </div>
             <p style={{ color: "var(--ink-muted)", fontSize: "0.85rem", marginBottom: "1.25rem" }}>
               Because KyPasswords enforces end-to-end zero-knowledge encryption, enter your master password or paper recovery code to unseal your vault key.
@@ -351,17 +361,42 @@ export function App() {
                 />
               </div>
 
-              <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.75rem" }}>
-                <button type="button" className="btn btn-secondary" onClick={handleLogout}>
-                  Log Out
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "1rem" }}>
+                <button
+                  type="button"
+                  className="btn btn-quiet btn-sm"
+                  onClick={() => {
+                    setShowUnlockModal(false);
+                    setShowHistoryModal(true);
+                  }}
+                >
+                  <RotateCcw size={14} /> Rollback / History
                 </button>
-                <button type="submit" className="btn btn-primary" disabled={unlocking || !unlockPassword}>
-                  {unlocking ? "Unlocking…" : "Unlock"}
-                </button>
+                <div style={{ display: "flex", gap: "0.75rem" }}>
+                  <button type="button" className="btn btn-secondary" onClick={() => setShowUnlockModal(false)}>
+                    Cancel
+                  </button>
+                  <button type="submit" className="btn btn-primary" disabled={unlocking || !unlockPassword}>
+                    {unlocking ? "Unlocking…" : "Unlock"}
+                  </button>
+                </div>
               </div>
             </form>
           </div>
         </div>
+      ) : null}
+
+      {/* History & Rollback Modal */}
+      {showHistoryModal ? (
+        <HistoryModal
+          onClose={() => setShowHistoryModal(false)}
+          onRestored={async () => {
+            setShowHistoryModal(false);
+            if (user) {
+              await initVault(user);
+            }
+          }}
+        />
       ) : null}
     </div>
   );
