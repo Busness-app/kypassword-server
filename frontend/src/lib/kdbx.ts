@@ -34,6 +34,8 @@ export class KeePassVault {
     const keyBuf = vaultKey.buffer.slice(vaultKey.byteOffset, vaultKey.byteOffset + vaultKey.byteLength) as ArrayBuffer;
     const cred = new kdbxweb.Credentials(kdbxweb.ProtectedValue.fromBinary(keyBuf));
     const db = kdbxweb.Kdbx.create(cred, vaultName);
+    // ponytail: use native WebCrypto AES-KDF to avoid missing Argon2 WASM engine
+    db.header.setKdf(kdbxweb.Consts.KdfId.Aes);
     
     // Create standard default folders
     const root = db.getDefaultGroup();
@@ -168,6 +170,13 @@ export class KeePassVault {
     } else {
       e.fields.delete("otp");
       e.fields.delete("TOTP");
+    }
+
+    if (entry.groupUuid && e.parentGroup?.uuid.toString() !== entry.groupUuid) {
+      const targetGroup = this.findGroup(entry.groupUuid);
+      if (targetGroup) {
+        this.db.move(e, targetGroup);
+      }
     }
 
     e.times.update();

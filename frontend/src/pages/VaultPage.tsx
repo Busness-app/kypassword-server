@@ -180,6 +180,8 @@ export function VaultPage({ vault, vaultVersion, onSave, onExport, onReload }: P
     try {
       await onSave();
       setHasUnsavedChanges(false);
+    } catch (err: any) {
+      alert("Failed to save vault: " + (err?.message || String(err)));
     } finally {
       setSaving(false);
     }
