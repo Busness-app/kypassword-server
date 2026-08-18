@@ -16,9 +16,10 @@ type Props = {
   user: any;
   vaultKey: Uint8Array;
   onUserUpdated: () => void;
+  onForgetDevice?: () => void;
 };
 
-export function SecuritySettings({ user, vaultKey, onUserUpdated }: Props) {
+export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice }: Props) {
   const [oldPassword, setOldPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -304,6 +305,23 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated }: Props) {
           )}
         </section>
       ) : null}
+
+      {/* Local Device Vault & 1-Click SSO */}
+      <section className="field-card" style={{ marginBottom: "2rem" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "1rem" }}>
+          <KeyRound size={20} color="var(--accent)" />
+          <h3 style={{ margin: 0 }}>This Device & 1-Click SSO</h3>
+        </div>
+        <p style={{ color: "var(--ink-muted)", fontSize: "0.85rem", marginBottom: "1rem" }}>
+          This browser holds your local zero-knowledge encryption key in its secure storage vault to allow instant 1-click SSO access.
+        </p>
+
+        {onForgetDevice && (
+          <button className="btn btn-danger btn-sm" onClick={onForgetDevice}>
+            Forget This Device & Sign Out
+          </button>
+        )}
+      </section>
 
       {/* 4. Paired Devices */}
       <section className="field-card">

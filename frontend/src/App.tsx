@@ -5,7 +5,10 @@ import {
   generateVaultMasterKey,
   wrapVaultKey,
   unwrapVaultKey,
+  bytesToHex,
+  hexToBytes,
 } from "./lib/vaultCrypto";
+import { getDeviceVaultKey, storeDeviceVaultKey, clearDeviceVaultKey } from "./lib/storage";
 import { LoginPage } from "./pages/LoginPage";
 import { VaultPage } from "./pages/VaultPage";
 import { SecuritySettings } from "./pages/SecuritySettings";
@@ -110,24 +113,31 @@ export function App() {
           const upMeta = (await uploadRes.json()).metadata;
           setVaultVersion(upMeta.version);
         }
+        await storeDeviceVaultKey(u.username, bytesToHex(key));
+        setShowUnlockModal(false);
         return;
       }
 
       // Case 2: Existing vault on server
-      if (!masterPassword) {
-        // Need user to enter master password or recovery code to unlock envelope
-        setShowUnlockModal(true);
-        return;
-      }
-
-      // We have password & envelope: unwrap key
-      let key: Uint8Array;
-      if (meta.passwordEnvelope) {
-        key = await unwrapVaultKey(meta.passwordEnvelope, masterPassword);
-      } else if (meta.recoveryEnvelope) {
-        key = await unwrapVaultKey(meta.recoveryEnvelope, masterPassword);
+      let key: Uint8Array | null = null;
+      if (masterPassword) {
+        if (meta.passwordEnvelope) {
+          key = await unwrapVaultKey(meta.passwordEnvelope, masterPassword);
+        } else if (meta.recoveryEnvelope) {
+          key = await unwrapVaultKey(meta.recoveryEnvelope, masterPassword);
+        } else {
+          throw new Error("No key envelopes found on server metadata");
+        }
+        await storeDeviceVaultKey(u.username, bytesToHex(key));
       } else {
-        throw new Error("No key envelopes found on server metadata");
+        // Check for cached key on this trusted device
+        const cachedHex = await getDeviceVaultKey(u.username).catch(() => undefined);
+        if (cachedHex) {
+          key = hexToBytes(cachedHex);
+        } else {
+          setShowUnlockModal(true);
+          return;
+        }
       }
 
       setVaultKey(key);
@@ -216,6 +226,13 @@ export function App() {
     setVaultKey(null);
   };
 
+  const handleForgetDevice = async () => {
+    if (user?.username) {
+      await clearDeviceVaultKey(user.username);
+    }
+    await handleLogout();
+  };
+
   const handleLockVault = () => {
     setVault(null);
     setVaultKey(null);
@@ -296,6 +313,7 @@ export function App() {
             user={user}
             vaultKey={vaultKey!}
             onUserUpdated={checkAuth}
+            onForgetDevice={handleForgetDevice}
           />
         )
       ) : (
@@ -329,7 +347,7 @@ export function App() {
               </button>
             </div>
             <p style={{ color: "var(--ink-muted)", fontSize: "0.85rem", marginBottom: "1.25rem" }}>
-              Because KyPasswords enforces end-to-end zero-knowledge encryption, enter your master password or paper recovery code to unseal your vault key.
+              Because KyPasswords enforces end-to-end zero-knowledge encryption, enter your master password once to unlock and trust this device for 1-click SSO.
             </p>
 
             {unlockError ? (
