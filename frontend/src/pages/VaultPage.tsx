@@ -4,6 +4,7 @@ import { generateTOTP } from "../lib/totp";
 import { PasswordGenerator } from "../components/PasswordGenerator";
 import { DevicePairingModal } from "../components/DevicePairingModal";
 import { HistoryModal } from "../components/HistoryModal";
+import { CsvImportModal } from "../components/CsvImportModal";
 import {
   Folder,
   Plus,
@@ -22,6 +23,8 @@ import {
   Clock,
   Shield,
   RefreshCw,
+  FileSpreadsheet,
+  CheckCircle2,
 } from "lucide-react";
 
 type Props = {
@@ -53,6 +56,8 @@ export function VaultPage({ vault, vaultVersion, onSave, onExport, onReload }: P
   const [showGenerator, setShowGenerator] = useState(false);
   const [showPairing, setShowPairing] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [showCsvImport, setShowCsvImport] = useState(false);
+  const [importMessage, setImportMessage] = useState<string | null>(null);
   const [revealPassword, setRevealPassword] = useState(false);
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -246,6 +251,9 @@ export function VaultPage({ vault, vaultVersion, onSave, onExport, onReload }: P
 
         <div style={{ marginTop: "auto", padding: "1rem", borderTop: "1px solid var(--line)" }}>
           <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+            <button className="btn btn-primary btn-sm" onClick={() => setShowCsvImport(true)}>
+              <FileSpreadsheet size={14} /> Import CSV Passwords
+            </button>
             <button className="btn btn-secondary btn-sm" onClick={() => setShowPairing(true)}>
               <QrCode size={14} /> Pair Extension / Mobile
             </button>
@@ -283,6 +291,35 @@ export function VaultPage({ vault, vaultVersion, onSave, onExport, onReload }: P
             </button>
           </div>
 
+          {importMessage ? (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                background: "var(--success-soft)",
+                border: "1px solid rgba(16, 185, 129, 0.3)",
+                padding: "0.5rem 0.75rem",
+                borderRadius: "6px",
+                fontSize: "0.8rem",
+                marginBottom: "0.5rem",
+                color: "var(--success)",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
+                <CheckCircle2 size={14} />
+                <span>{importMessage}</span>
+              </div>
+              <button
+                className="btn btn-quiet btn-sm"
+                style={{ padding: "0.1rem 0.3rem" }}
+                onClick={() => setImportMessage(null)}
+              >
+                ✕
+              </button>
+            </div>
+          ) : null}
+
           {hasUnsavedChanges ? (
             <div
               style={{
@@ -306,8 +343,15 @@ export function VaultPage({ vault, vaultVersion, onSave, onExport, onReload }: P
 
         <ul className="entry-list">
           {filteredEntries.length === 0 ? (
-            <li style={{ padding: "2rem 1rem", textAlign: "center", color: "var(--ink-muted)", fontSize: "0.9rem" }}>
-              No entries found.
+            <li style={{ padding: "2.5rem 1rem", textAlign: "center", color: "var(--ink-muted)", fontSize: "0.9rem" }}>
+              <p style={{ marginBottom: "1rem" }}>No entries found.</p>
+              <button
+                className="btn btn-secondary btn-sm"
+                style={{ margin: "0 auto" }}
+                onClick={() => setShowCsvImport(true)}
+              >
+                <FileSpreadsheet size={14} /> Import from CSV
+              </button>
             </li>
           ) : (
             filteredEntries.map((e) => (
@@ -591,6 +635,23 @@ export function VaultPage({ vault, vaultVersion, onSave, onExport, onReload }: P
       ) : null}
 
       {showPairing ? <DevicePairingModal onClose={() => setShowPairing(false)} /> : null}
+
+      {showCsvImport ? (
+        <CsvImportModal
+          vault={vault}
+          groups={groups}
+          onClose={() => setShowCsvImport(false)}
+          onImportComplete={(count, createdFolders) => {
+            setHasUnsavedChanges(true);
+            refreshVaultData();
+            const folderText =
+              createdFolders.length > 0
+                ? ` (${createdFolders.length} folder${createdFolders.length === 1 ? "" : "s"} created)`
+                : "";
+            setImportMessage(`Successfully imported ${count} password${count === 1 ? "" : "s"}${folderText}. Click "Save Vault" to sync changes.`);
+          }}
+        />
+      ) : null}
 
       {showHistory ? (
         <HistoryModal

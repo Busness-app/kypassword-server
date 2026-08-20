@@ -16,7 +16,7 @@ KyPassword Server is a zero-knowledge KeePass v4 management and synchronization 
 ## Verification
 
 - Backend: `go test ./...`
-- Frontend: `npm run build` in `frontend/`
+- Frontend: `npm test && npm run build` in `frontend/`
 - Daemon build: `go build -o ./kypassword-server ./cmd/server/main.go`
 - Docker build: `docker build -t kypassword-server:latest .`
 
@@ -56,4 +56,9 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
 - `frontend/src/lib/storage.ts`: manages the persistent IndexedDB `keys` vault on trusted devices
   to allow 1-click SSO access without typing a password; explicit "Forget This Device" controls
   clear stored secrets from browser storage.
+- `frontend/src/lib/csvImport.ts`: zero-knowledge RFC 4180 CSV parser and multi-format importer supporting
+  Google Chrome, 1Password, Bitwarden, LastPass, DashPass (Dashlane), and generic CSV formats. Provider
+  folder values are split on `/` and `\` into nested KeePass groups, reusing existing groups by path;
+  all parsing and vault mutation happen client-side. Covered by `csvImport.test.ts`.
+  ponytail: no duplicate detection against existing entries — re-importing the same CSV duplicates it.
 
