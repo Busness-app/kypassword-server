@@ -18,7 +18,7 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /kypassword-server ./cmd/server/main.go
 
 # Stage 3: Minimal Production Image
-FROM alpine:3.21
+FROM alpine:3.24
 RUN apk add --no-cache ca-certificates tzdata curl \
     && addgroup -S kypassword && adduser -S kypassword -G kypassword \
     && mkdir -p /kypassword/data /kypassword/config /app/frontend/dist \
