@@ -1,0 +1,46 @@
+version: 2
+
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      go:
+        patterns: ["*"]
+
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      # Split so a React/Vite major does not sit in the same PR as a bump to
+      # kdbxweb or argon2-browser, which need vault round-trip review.
+      crypto:
+        patterns: ["kdbxweb", "argon2-browser"]
+      dev:
+        dependency-type: development
+      prod:
+        dependency-type: production
+        exclude-patterns: ["kdbxweb", "argon2-browser"]
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "chore(deps)"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "chore(ci)"
+    groups:
+      actions:
+        patterns: ["*"]

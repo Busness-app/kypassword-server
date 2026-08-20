@@ -25,6 +25,11 @@ All of the above run in CI on every push to `master` and every pull request, spl
 across four jobs in `.github/workflows/ci.yml`: `backend`, `frontend`, `docker`,
 `security`. Keep the workflow and this list in sync when either changes.
 
+`.github/dependabot.yml` opens weekly grouped dependency PRs for Go modules, npm,
+the Dockerfile base images, and the actions themselves. `kdbxweb` and
+`argon2-browser` are grouped separately from the rest of npm: a bump to either
+touches vault encryption, so it needs a vault round-trip review, not a rubber stamp.
+
 # Ponytail, lazy senior dev mode
 
 Use the smallest correct change.
