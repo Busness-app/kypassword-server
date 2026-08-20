@@ -15,10 +15,15 @@ KyPassword Server is a zero-knowledge KeePass v4 management and synchronization 
 
 ## Verification
 
-- Backend: `go test ./...`
-- Frontend: `npm test && npm run build` in `frontend/`
+- Backend: `gofmt -l .` (must be empty), `go vet ./...`, `go test -race ./...`
+- Frontend: `npm test && npm run build` in `frontend/` (`build` is `tsc && vite build`, so it is the typecheck gate)
 - Daemon build: `go build -o ./kypassword-server ./cmd/server/main.go`
 - Docker build: `docker build -t kypassword-server:latest .`
+- Dependency vulns: `govulncheck ./...` and `npm audit --audit-level=high` in `frontend/`
+
+All of the above run in CI on every push to `master` and every pull request, split
+across four jobs in `.github/workflows/ci.yml`: `backend`, `frontend`, `docker`,
+`security`. Keep the workflow and this list in sync when either changes.
 
 # Ponytail, lazy senior dev mode
 

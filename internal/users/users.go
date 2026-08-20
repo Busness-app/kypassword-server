@@ -17,10 +17,10 @@ import (
 )
 
 var (
-	ErrNotFound       = errors.New("user not found")
-	ErrUsernameTaken  = errors.New("username already taken")
-	ErrInvalidAuth    = errors.New("invalid credentials")
-	ErrUserInactive   = errors.New("user account is deactivated")
+	ErrNotFound      = errors.New("user not found")
+	ErrUsernameTaken = errors.New("username already taken")
+	ErrInvalidAuth   = errors.New("invalid credentials")
+	ErrUserInactive  = errors.New("user account is deactivated")
 )
 
 type Role string
@@ -81,7 +81,7 @@ func (u User) Public() Public {
 type Store struct {
 	mu       sync.RWMutex
 	filePath string
-	users    map[string]User // key: ID
+	users    map[string]User   // key: ID
 	byName   map[string]string // lowercase username -> ID
 	bySSOSub map[string]string // SSOSub -> ID
 }

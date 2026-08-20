@@ -74,8 +74,8 @@ type ConflictEntry struct {
 
 // Store manages user vaults, history snapshots, and conflict files.
 type Store struct {
-	mu           sync.RWMutex
-	baseDir      string
+	mu            sync.RWMutex
+	baseDir       string
 	retentionDays int
 }
 
