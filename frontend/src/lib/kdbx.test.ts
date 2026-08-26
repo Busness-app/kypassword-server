@@ -1,6 +1,9 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { KeePassVault } from "./kdbx.js";
+import * as kdbxweb from "kdbxweb";
+
+const { Consts } = (kdbxweb as { default?: typeof kdbxweb }).default ?? kdbxweb;
 
 const vaultKey = () => {
   const key = new Uint8Array(32);
@@ -9,14 +12,9 @@ const vaultKey = () => {
 };
 
 // Outside a browser there is no global DOMParser, so save/load runs through
-// kdbxweb's @xmldom/xmldom fallback. These cover both that XML path and the
-// CJS interop of the kdbxweb import, neither of which the CSV tests touch.
+// kdbxweb's @xmldom/xmldom fallback. The CSV tests never call exportBinary/open,
+// so that path is uncovered without this file.
 describe("KDBX vault round-trip", () => {
-  test("kdbxweb class exports resolve under Node's CJS interop", async () => {
-    const vault = await KeePassVault.createNew(vaultKey(), "Interop Vault");
-    assert.ok(vault.getGroups().length > 0);
-  });
-
   test("export and reopen preserves entries, unicode and XML metacharacters", async () => {
     const key = vaultKey();
     const vault = await KeePassVault.createNew(key, "RoundTrip Vault");
@@ -52,6 +50,11 @@ describe("KDBX vault round-trip", () => {
     const wrong = vaultKey();
     wrong[0] ^= 0xff;
 
-    await assert.rejects(() => KeePassVault.open(exported, wrong));
+    // Match the code: a bare rejects() would also pass on a TypeError from a
+    // broken interop binding or an xmldom failure, proving nothing about the key.
+    await assert.rejects(
+      () => KeePassVault.open(exported, wrong),
+      (err: unknown) => (err as { code?: string }).code === Consts.ErrorCodes.InvalidKey,
+    );
   });
 });

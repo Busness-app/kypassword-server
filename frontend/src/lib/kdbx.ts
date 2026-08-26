@@ -1,8 +1,6 @@
 import * as kdbxweb from "kdbxweb";
-// kdbxweb ships a webpack UMD bundle. Node's CJS export lexer can't see its
-// class exports, so on Node they arrive only under `default`. Destructure once
-// through that fallback; the namespace import still supplies the types.
-const { CryptoEngine, Credentials, ProtectedValue, Kdbx, Consts }: typeof kdbxweb =
+// kdbxweb's UMD bundle defeats Node's CJS export lexer; classes arrive under `default`.
+const { CryptoEngine, Credentials, ProtectedValue, Kdbx, Consts } =
   (kdbxweb as { default?: typeof kdbxweb }).default ?? kdbxweb;
 // @ts-ignore
 import argon2 from "argon2-browser/dist/argon2-bundled.min.js";
