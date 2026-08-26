@@ -1,9 +1,14 @@
 import * as kdbxweb from "kdbxweb";
+// kdbxweb ships a webpack UMD bundle. Node's CJS export lexer can't see its
+// class exports, so on Node they arrive only under `default`. Destructure once
+// through that fallback; the namespace import still supplies the types.
+const { CryptoEngine, Credentials, ProtectedValue, Kdbx, Consts }: typeof kdbxweb =
+  (kdbxweb as { default?: typeof kdbxweb }).default ?? kdbxweb;
 // @ts-ignore
 import argon2 from "argon2-browser/dist/argon2-bundled.min.js";
 
 // Register Argon2 implementation with kdbxweb so KDBX4 Argon2 vaults can be opened and saved
-kdbxweb.CryptoEngine.setArgon2Impl(
+CryptoEngine.setArgon2Impl(
   async (
     password: ArrayBuffer,
     salt: ArrayBuffer,
@@ -63,10 +68,10 @@ export class KeePassVault {
   // Create a new blank KDBX v4 vault encrypted with the random 256-bit vaultKey
   public static async createNew(vaultKey: Uint8Array, vaultName = "KyPasswords Vault"): Promise<KeePassVault> {
     const keyBuf = vaultKey.buffer.slice(vaultKey.byteOffset, vaultKey.byteOffset + vaultKey.byteLength) as ArrayBuffer;
-    const cred = new kdbxweb.Credentials(kdbxweb.ProtectedValue.fromBinary(keyBuf));
-    const db = kdbxweb.Kdbx.create(cred, vaultName);
+    const cred = new Credentials(ProtectedValue.fromBinary(keyBuf));
+    const db = Kdbx.create(cred, vaultName);
     // ponytail: use native WebCrypto AES-KDF to avoid missing Argon2 WASM engine
-    db.header.setKdf(kdbxweb.Consts.KdfId.Aes);
+    db.header.setKdf(Consts.KdfId.Aes);
     
     // Create standard default folders
     const root = db.getDefaultGroup();
@@ -81,8 +86,8 @@ export class KeePassVault {
   // Open an existing encrypted KDBX v4 binary with the random vaultKey
   public static async open(buffer: ArrayBuffer, vaultKey: Uint8Array): Promise<KeePassVault> {
     const keyBuf = vaultKey.buffer.slice(vaultKey.byteOffset, vaultKey.byteOffset + vaultKey.byteLength) as ArrayBuffer;
-    const cred = new kdbxweb.Credentials(kdbxweb.ProtectedValue.fromBinary(keyBuf));
-    const db = await kdbxweb.Kdbx.load(buffer, cred);
+    const cred = new Credentials(ProtectedValue.fromBinary(keyBuf));
+    const db = await Kdbx.load(buffer, cred);
     return new KeePassVault(db, cred);
   }
 
@@ -129,7 +134,7 @@ export class KeePassVault {
       
       let password = "";
       const pwField = e.fields.get("Password");
-      if (pwField instanceof kdbxweb.ProtectedValue) {
+      if (pwField instanceof ProtectedValue) {
         password = pwField.getText();
       } else if (typeof pwField === "string") {
         password = pwField;
@@ -166,7 +171,7 @@ export class KeePassVault {
     const e = this.db.createEntry(targetGroup);
     e.fields.set("Title", entry.title);
     e.fields.set("UserName", entry.username);
-    e.fields.set("Password", kdbxweb.ProtectedValue.fromString(entry.password));
+    e.fields.set("Password", ProtectedValue.fromString(entry.password));
     e.fields.set("URL", entry.url);
     e.fields.set("Notes", entry.notes);
     if (entry.totpSeed) {
@@ -193,7 +198,7 @@ export class KeePassVault {
 
     e.fields.set("Title", entry.title);
     e.fields.set("UserName", entry.username);
-    e.fields.set("Password", kdbxweb.ProtectedValue.fromString(entry.password));
+    e.fields.set("Password", ProtectedValue.fromString(entry.password));
     e.fields.set("URL", entry.url);
     e.fields.set("Notes", entry.notes);
     if (entry.totpSeed) {
