@@ -15,9 +15,17 @@ import (
 	"time"
 
 	"kypassword-server/internal/api"
+	"kypassword-server/internal/users"
 )
 
 func main() {
+	if handled, err := runMigrationCommand(os.Args[1:], os.Stdout); handled {
+		if err != nil {
+			log.Fatalf("%v", err)
+		}
+		return
+	}
+
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "5877"
@@ -28,10 +36,9 @@ func main() {
 		dataDir = "./data"
 	}
 
-	configDir := os.Getenv("CONFIG_DIR")
-	if configDir == "" {
-		configDir = "./config"
-	}
+	configDir := configDirFromEnv()
+
+	requireMigratedAccounts(configDir)
 
 	retentionDays := 90
 	if r := os.Getenv("RETENTION_DAYS"); r != "" {
@@ -126,4 +133,29 @@ func main() {
 	defer cancel()
 	_ = httpServer.Shutdown(ctx)
 	log.Println("server stopped.")
+}
+
+// requireMigratedAccounts refuses to start while any active account has no KySignOn
+// identity. It runs before the listener opens, so a half-migrated upgrade never serves a
+// single request — such an account cannot sign in, and replication would provision a
+// second account for the same person alongside it.
+func requireMigratedAccounts(configDir string) {
+	store, err := users.NewStore(configDir)
+	if err != nil {
+		log.Fatalf("failed to read accounts from %s: %v", configDir, err)
+	}
+
+	unlinked := users.UnlinkedActive(store)
+	if len(unlinked) == 0 {
+		return
+	}
+
+	log.Printf("KyPassword now authenticates only through KySignOn, and %d active account(s) have no KySignOn identity:", len(unlinked))
+	for _, u := range unlinked {
+		log.Printf("  - %s (id %s)", u.Username, u.ID)
+	}
+	log.Printf("Link each one:      kypassword-server link-sso --username <name> --sub <kysignon-user-id>")
+	log.Printf("Or retire it:       kypassword-server deactivate --username <name>")
+	log.Printf("The KySignOn user ID is the value shown in its admin user list, and is the same value it puts in the OIDC 'sub' claim.")
+	os.Exit(1)
 }
