@@ -276,16 +276,13 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. Login mode
-	user, err := s.users.GetBySSOSub(claims.Sub)
-	if err != nil && errors.Is(err, users.ErrNotFound) {
-		if claims.PreferredUsername != "" {
-			if u, errU := s.users.GetByUsername(claims.PreferredUsername); errU == nil {
-				user = u
-				_ = s.users.LinkSSO(u.ID, claims.Sub, claims.PreferredUsername, claims.Email)
-			}
-		}
-	}
+	// 2. Login mode.
+	//
+	// The subject is the only key an identity is ever matched on. Matching on
+	// preferred_username as well — which this used to do on a subject miss — hands any
+	// KySignOn identity the local account that happens to share its name, and that
+	// account's vault with it. A name is an attribute of an identity, not the identity.
+	user, _ := s.users.GetBySSOSub(claims.Sub)
 
 	if user.ID == "" {
 		if !settings.AutoProvision {
