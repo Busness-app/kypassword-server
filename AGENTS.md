@@ -6,6 +6,7 @@ KyPassword Server is a zero-knowledge KeePass v4 management and synchronization 
 
 1. **Zero-Knowledge KeePass v4 Vault Storage**: Server stores encrypted KDBX v4 vaults and wrapped key envelopes. The server never receives raw master passwords, plaintext vault keys, or unencrypted credential data.
 2. **Key Custody & Envelopes**: Vault master key (256-bit) is wrapped client-side into password-wrapped, paper-recovery-wrapped, and device-wrapped envelopes using PBKDF2/Argon2 + AES-GCM. Changing passwords re-wraps the envelope without re-encrypting the full KDBX.
+   KyAuth may upload its local KDBX and password envelope when the server vault is empty; the web client opens both raw-key and KyAuth hex-key KDBX credentials.
 3. **Atomic Sync & Conflict Preservation**: Optimistic concurrency via ETag / version check (`If-Match: "{version}"`). Conflicting uploads are rejected and preserved in `conflicts/` for client deconfliction.
 4. **90-Day Version History & Rollback**: Automatic version snapshots with 90-day retention policy and one-click rollback.
 5. **KySignOn SSO & Directory Replication**: KySignOn is the sole authenticator and sole directory (`/api/auth/oidc/login`, `/api/sync/webhook`). There is no local login, no local account creation and no server-side credential of any kind. See "Replication" and "Authentication" below.
@@ -117,6 +118,16 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
 - `frontend/src/lib/storage.ts`: manages the persistent IndexedDB `keys` vault on trusted devices
   to allow 1-click SSO access without typing a password; explicit "Forget This Device" controls
   clear stored secrets from browser storage.
+- `frontend/src/lib/kdbx.ts`: client-side KDBX v4 vault. `open()` tries the raw 256-bit vault key
+  first and, only on `InvalidKey`, retries with the same key as a hexadecimal password string —
+  which is how KyAuth's KDBX library represents it (`KdbxPasswordVault.kt`, `Credentials.from(
+  EncryptedValue.fromString(bytesToHex(vaultKey)))`). Both attempts copy the buffer, because
+  `Kdbx.load` consumes it. A vault opened the KyAuth way is saved back the same way, so it stays
+  readable on Android.
+  ponytail: `createNew` writes AES-KDF while KyAuth writes Argon2, so a vault's KDF depends on which
+  client last saved it. Both clients read both. Argon2 works in the browser (the WASM is inlined) but
+  not under `node --test`, which is why the interop test forces AES — upgrade path is a
+  browser-capable test runner, then unify on Argon2.
 - `frontend/src/lib/csvImport.ts`: zero-knowledge RFC 4180 CSV parser and multi-format importer supporting
   Google Chrome, 1Password, Bitwarden, LastPass, DashPass (Dashlane), and generic CSV formats. Provider
   folder values are split on `/` and `\` into nested KeePass groups, reusing existing groups by path;
