@@ -52,9 +52,10 @@ over anything saved in `config/sso.json`. The admin UI will refuse to overwrite 
 | `KYPASSWORD_OIDC_AUTO_PROVISION` | no | defaults to `true` |
 | `PORT` | no | defaults to `5877` |
 | `DATA_DIR` | no | defaults to `./data` — vaults, history, audit log |
-| `CONFIG_DIR` | no | defaults to `./config` — `users.json`, `sso.json`, pairing secret |
+| `CONFIG_DIR` | no | defaults to `./config` — `users.json`, `sso.json`, pairing secret, audit key |
 | `RETENTION_DAYS` | no | defaults to `90` |
 | `PAIRING_SECRET` | no | generated into `CONFIG_DIR/pairing.secret` if unset |
+| `AUDIT_KEY` | no | hex, 32+ bytes; generated into `CONFIG_DIR/audit.key` if unset |
 
 All three OIDC values must be set together. A partially set environment is treated as
 unset, so that a typo cannot silently produce a configuration that is half environment and
