@@ -1,124 +1,30 @@
-import React, { useState, useEffect, FormEvent } from "react";
-import { getJSON, postJSON, toErrorMessage } from "../lib/api";
-import { deriveAuthSecret } from "../lib/vaultCrypto";
-import { ShieldCheck, KeyRound, FileText, ArrowRight, Lock } from "lucide-react";
+import React, { useState, useEffect } from "react";
+import { getJSON } from "../lib/api";
+import { ShieldCheck, Lock, AlertTriangle } from "lucide-react";
 
-type Props = {
-  onLoginSuccess: (user: any, masterPassword?: string) => void;
-};
+// KySignOn is the only way in. There is no local password to type here, because the
+// master password is not a credential: it unwraps the vault key in your browser, after a
+// KySignOn session already exists. That second step lives in the unlock dialog.
 
-export function LoginPage({ onLoginSuccess }: Props) {
-  const [mode, setMode] = useState<"login" | "recovery" | "setup">("login");
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
-  const [recoverySecret, setRecoverySecret] = useState("");
-  const [ssoEnabled, setSsoEnabled] = useState(false);
-  const [setupRequired, setSetupRequired] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
+export function LoginPage() {
+  const [ssoEnabled, setSsoEnabled] = useState<boolean | null>(null);
 
   useEffect(() => {
-    // Check initial setup state
-    getJSON<{ setupRequired: boolean }>("/api/setup")
-      .then((res) => {
-        if (res.setupRequired) {
-          setSetupRequired(true);
-          setMode("setup");
-        }
-      })
-      .catch(() => {});
-
-    // Check SSO availability
     getJSON<{ enabled: boolean }>("/api/auth/sso-config")
-      .then((res) => {
-        if (res.enabled) setSsoEnabled(true);
-      })
-      .catch(() => {});
+      .then((res) => setSsoEnabled(res.enabled))
+      .catch(() => setSsoEnabled(false));
   }, []);
-
-  const handleLoginSubmit = async (e: FormEvent) => {
-    e.preventDefault();
-    setBusy(true);
-    setError("");
-
-    try {
-      // 1. Fetch user's KDF params (salt & iterations)
-      const params = await getJSON<{ salt: string; iterations: number }>(
-        `/api/auth/login-params?username=${encodeURIComponent(username)}`
-      );
-
-      // 2. Derive auth secret client-side
-      const authSecret = await deriveAuthSecret(password, params.salt, params.iterations);
-
-      // 3. Authenticate with authSecret (and password fallback)
-      const res = await postJSON<{ ok: boolean; user: any }>("/api/auth/login", {
-        username,
-        password,
-        authSecret,
-      });
-
-      // Pass master password to parent to unlock client-side vault key envelope
-      onLoginSuccess(res.user, password);
-    } catch (err) {
-      setError(toErrorMessage(err, "Invalid username or password"));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleRecoverySubmit = async (e: FormEvent) => {
-    e.preventDefault();
-    setBusy(true);
-    setError("");
-
-    try {
-      const res = await postJSON<{ ok: boolean; user: any }>("/api/auth/recovery", {
-        username,
-        recoverySecret: recoverySecret.trim().toUpperCase(),
-      });
-
-      onLoginSuccess(res.user, recoverySecret.trim().toUpperCase());
-    } catch (err) {
-      setError(toErrorMessage(err, "Invalid paper recovery code"));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleSetupSubmit = async (e: FormEvent) => {
-    e.preventDefault();
-    setBusy(true);
-    setError("");
-
-    try {
-      const res = await postJSON<{ ok: boolean; user: any }>("/api/setup", {
-        username,
-        password,
-      });
-      onLoginSuccess(res.user, password);
-    } catch (err) {
-      setError(toErrorMessage(err, "Setup failed"));
-    } finally {
-      setBusy(false);
-    }
-  };
 
   return (
     <div className="auth-container">
       <div className="auth-box">
         <div className="auth-header">
           <img src="/logo.png" alt="KyPasswords" />
-          <h1>{mode === "setup" ? "Initial Setup" : "KyPasswords"}</h1>
-          <p>
-            {mode === "setup"
-              ? "Create the primary administrator account for this instance."
-              : mode === "recovery"
-              ? "Unlock vault using your paper recovery code."
-              : "Zero-Knowledge KeePass Vault & Sync"}
-          </p>
+          <h1>KyPasswords</h1>
+          <p>Zero-Knowledge KeePass Vault &amp; Sync</p>
         </div>
 
-        {error ? (
+        {ssoEnabled === false ? (
           <div
             style={{
               background: "var(--danger-soft)",
@@ -128,145 +34,60 @@ export function LoginPage({ onLoginSuccess }: Props) {
               borderRadius: "6px",
               fontSize: "0.85rem",
               marginBottom: "1.25rem",
+              display: "flex",
+              gap: "0.6rem",
+              alignItems: "flex-start",
             }}
           >
-            {error}
+            <AlertTriangle size={18} style={{ flexShrink: 0, marginTop: "0.1rem" }} />
+            <span>
+              KySignOn is unavailable, so sign-in is unavailable. Your passwords are not lost — any
+              copy of your vault opens in a standard KeePass client. Ask your administrator to check
+              the identity provider.
+            </span>
           </div>
         ) : null}
 
-        {mode === "setup" ? (
-          <form onSubmit={handleSetupSubmit}>
-            <div className="input-group">
-              <label className="input-label">Administrator Username</label>
-              <input
-                type="text"
-                className="input"
-                placeholder="admin"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                required
-              />
-            </div>
-            <div className="input-group">
-              <label className="input-label">Master Password</label>
-              <input
-                type="password"
-                className="input"
-                placeholder="••••••••••••"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-              />
-            </div>
-            <button type="submit" className="btn btn-primary" style={{ width: "100%" }} disabled={busy}>
-              {busy ? "Initializing…" : "Complete Setup & Initialize"}
-            </button>
-          </form>
-        ) : mode === "recovery" ? (
-          <form onSubmit={handleRecoverySubmit}>
-            <div className="input-group">
-              <label className="input-label">Account Username</label>
-              <input
-                type="text"
-                className="input"
-                placeholder="username"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                required
-              />
-            </div>
-            <div className="input-group">
-              <label className="input-label">Paper Recovery Code</label>
-              <input
-                type="text"
-                className="input font-mono"
-                placeholder="KYPASS-XXXX-XXXX-XXXX"
-                value={recoverySecret}
-                onChange={(e) => setRecoverySecret(e.target.value)}
-                required
-              />
-            </div>
-            <button type="submit" className="btn btn-primary" style={{ width: "100%", marginBottom: "1rem" }} disabled={busy}>
-              {busy ? "Unlocking…" : "Unlock Vault"}
-            </button>
-            <div style={{ textAlign: "center" }}>
-              <button type="button" className="btn btn-quiet btn-sm" onClick={() => setMode("login")}>
-                Back to Standard Sign In
-              </button>
-            </div>
-          </form>
+        {/* A link with aria-disabled still navigates and still takes focus, so when
+            KySignOn is unavailable this becomes a real disabled button instead: the click
+            goes nowhere, the control leaves the tab order, and what a screen reader
+            announces matches what the control actually does. */}
+        {ssoEnabled === false ? (
+          <button
+            type="button"
+            className="btn btn-primary"
+            style={{ width: "100%", marginBottom: "1.25rem" }}
+            disabled
+          >
+            <ShieldCheck size={18} /> Sign in with KySignOn
+          </button>
         ) : (
-          <div>
-            {ssoEnabled ? (
-              <div style={{ marginBottom: "1.5rem" }}>
-                <a
-                  href="/api/auth/oidc/login"
-                  className="btn btn-primary"
-                  style={{
-                    width: "100%",
-                    marginBottom: "1rem",
-                  }}
-                >
-                  <ShieldCheck size={18} /> Sign in with KySignOn
-                </a>
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    textAlign: "center",
-                    color: "var(--ink)",
-                    fontSize: "0.8rem",
-                    margin: "1rem 0",
-                  }}
-                >
-                  <div style={{ flex: 1, borderBottom: "1px solid var(--line)" }} />
-                  <span style={{ padding: "0 0.5rem" }}>or enter master password</span>
-                  <div style={{ flex: 1, borderBottom: "1px solid var(--line)" }} />
-                </div>
-              </div>
-            ) : null}
-
-            <form onSubmit={handleLoginSubmit}>
-              <div className="input-group">
-                <label className="input-label">Username</label>
-                <input
-                  type="text"
-                  className="input"
-                  placeholder="username"
-                  value={username}
-                  onChange={(e) => setUsername(e.target.value)}
-                  required
-                />
-              </div>
-
-              <div className="input-group">
-                <label className="input-label">Master Password</label>
-                <input
-                  type="password"
-                  className="input"
-                  placeholder="••••••••••••"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  required
-                />
-              </div>
-
-              <button type="submit" className="btn btn-primary" style={{ width: "100%", marginBottom: "1.25rem" }} disabled={busy}>
-                {busy ? "Signing in…" : "Sign In & Unlock Vault"}
-              </button>
-            </form>
-
-            <div style={{ textAlign: "center", borderTop: "1px solid var(--line)", paddingTop: "1rem" }}>
-              <button
-                type="button"
-                className="btn btn-quiet btn-sm"
-                onClick={() => setMode("recovery")}
-              >
-                <FileText size={14} /> Lost Password? Use Paper Recovery
-              </button>
-            </div>
-          </div>
+          <a
+            href="/api/auth/oidc/login"
+            className="btn btn-primary"
+            style={{ width: "100%", marginBottom: "1.25rem" }}
+          >
+            <ShieldCheck size={18} /> Sign in with KySignOn
+          </a>
         )}
+
+        <div
+          style={{
+            borderTop: "1px solid var(--line)",
+            paddingTop: "1rem",
+            color: "var(--ink-muted)",
+            fontSize: "0.8rem",
+            display: "flex",
+            gap: "0.6rem",
+            alignItems: "flex-start",
+          }}
+        >
+          <Lock size={16} style={{ flexShrink: 0, marginTop: "0.1rem" }} />
+          <span>
+            Signing in proves who you are to KySignOn. Your vault is unlocked separately, with a
+            master password this server never receives.
+          </span>
+        </div>
       </div>
     </div>
   );

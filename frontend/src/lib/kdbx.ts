@@ -1,4 +1,5 @@
 import * as kdbxweb from "kdbxweb";
+import { bytesToHex } from "./vaultCrypto";
 // kdbxweb's UMD bundle defeats Node's CJS export lexer; classes arrive under `default`.
 const { CryptoEngine, Credentials, ProtectedValue, Kdbx, Consts } =
   (kdbxweb as { default?: typeof kdbxweb }).default ?? kdbxweb;
@@ -85,8 +86,16 @@ export class KeePassVault {
   public static async open(buffer: ArrayBuffer, vaultKey: Uint8Array): Promise<KeePassVault> {
     const keyBuf = vaultKey.buffer.slice(vaultKey.byteOffset, vaultKey.byteOffset + vaultKey.byteLength) as ArrayBuffer;
     const cred = new Credentials(ProtectedValue.fromBinary(keyBuf));
-    const db = await Kdbx.load(buffer, cred);
-    return new KeePassVault(db, cred);
+    try {
+      return new KeePassVault(await Kdbx.load(buffer.slice(0), cred), cred);
+    } catch (error: unknown) {
+      if (typeof error !== "object" || error === null || !("code" in error) || error.code !== Consts.ErrorCodes.InvalidKey) {
+        throw error;
+      }
+      // KyAuth's KDBX library represents the same random key as hexadecimal password text.
+      const androidCred = new Credentials(ProtectedValue.fromString(bytesToHex(vaultKey)));
+      return new KeePassVault(await Kdbx.load(buffer.slice(0), androidCred), androidCred);
+    }
   }
 
   // Export/Save the vault back into encrypted KDBX v4 ArrayBuffer

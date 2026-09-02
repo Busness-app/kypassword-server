@@ -1,8 +1,96 @@
 package users
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
+
+// retiredCredentialFields are the JSON keys that held password- and recovery-derived
+// material. The server authenticates nobody now — KySignOn does — so none of these may
+// appear in a user record again.
+var retiredCredentialFields = []string{"passwordHash", "authSalt", "authIterations", "recoveryHash", "mustChangePassword"}
+
+func TestUserRecordCarriesNoAuthenticationSecret(t *testing.T) {
+	// The regression guard for the whole SSO-only change: if any of these reappear, the
+	// server is storing password-derived material again.
+	u := User{ID: "1", Username: "alice", Role: RoleUser, Active: true, SSOSub: "sub-1"}
+	blob, err := json.Marshal(u)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, forbidden := range retiredCredentialFields {
+		if strings.Contains(string(blob), forbidden) {
+			t.Fatalf("user record still carries %q: %s", forbidden, blob)
+		}
+	}
+}
+
+func TestPublicCarriesNoAuthenticationSecret(t *testing.T) {
+	blob, err := json.Marshal(User{ID: "1", Username: "alice", Role: RoleUser, Active: true}.Public())
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, forbidden := range retiredCredentialFields {
+		if strings.Contains(string(blob), forbidden) {
+			t.Fatalf("public user still carries %q: %s", forbidden, blob)
+		}
+	}
+}
+
+func TestStoreLoadsLegacyFileAndDropsCredentialFields(t *testing.T) {
+	// Existing deployments upgrade by starting the new binary. encoding/json ignores the
+	// keys it no longer knows, so a legacy file loads cleanly and the verifier is erased
+	// from disk on the first write. There is nothing to migrate to.
+	dir := t.TempDir()
+	writeUsersFile(t, dir, `[
+	  {
+	    "id":"u1","username":"alice","role":"admin","active":true,
+	    "passwordHash":"deadbeef","authSalt":"abc123","authIterations":600000,
+	    "recoveryHash":"cafebabe","mustChangePassword":true,
+	    "ssoSub":"sub-1","ssoUsername":"alice","ssoEmail":"alice@example.com"
+	  }
+	]`)
+
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	u, err := store.Get("u1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if u.Username != "alice" || u.Role != RoleAdmin || !u.Active || u.SSOSub != "sub-1" {
+		t.Fatalf("account did not survive the upgrade intact: %+v", u)
+	}
+
+	// Any write rewrites the whole file, so one role change is enough to erase them all.
+	if err := store.SetRole("u1", RoleUser); err != nil {
+		t.Fatalf("SetRole: %v", err)
+	}
+
+	onDisk, err := os.ReadFile(filepath.Join(dir, "users.json"))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	for _, forbidden := range retiredCredentialFields {
+		if strings.Contains(string(onDisk), forbidden) {
+			t.Errorf("users.json still contains %q after a save:\n%s", forbidden, onDisk)
+		}
+	}
+
+	// And the account is still usable after the rewrite.
+	reloaded, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("reload NewStore: %v", err)
+	}
+	if got, err := reloaded.GetBySSOSub("sub-1"); err != nil || got.Username != "alice" {
+		t.Fatalf("reloaded account mismatch: %+v, err: %v", got, err)
+	}
+}
 
 func TestUserStoreCRUD(t *testing.T) {
 	dir := t.TempDir()
@@ -11,64 +99,77 @@ func TestUserStoreCRUD(t *testing.T) {
 		t.Fatalf("NewStore failed: %v", err)
 	}
 
-	// 1. Create user
-	u, err := store.Create("Alice", "alice-secret-key-123", RoleAdmin)
+	// 1. Provision from an SSO identity — the only way an account is created now.
+	u, err := store.CreateSSOUser("Alice", RoleAdmin, "sso-uuid-alice", "alice_sso", "alice@urlxl.com")
 	if err != nil {
-		t.Fatalf("Create user failed: %v", err)
+		t.Fatalf("CreateSSOUser failed: %v", err)
 	}
-	if u.Username != "Alice" || u.Role != RoleAdmin {
+	if u.Username != "Alice" || u.Role != RoleAdmin || !u.Active {
 		t.Errorf("unexpected user attributes: %+v", u)
 	}
 
-	// Duplicate username should fail
-	if _, err := store.Create("alice", "another-pw", RoleUser); err != ErrUsernameTaken {
+	// Duplicate username under a different subject is refused.
+	if _, err := store.CreateSSOUser("alice", RoleUser, "sso-uuid-other", "other", ""); err != ErrUsernameTaken {
 		t.Errorf("expected ErrUsernameTaken, got: %v", err)
 	}
 
-	// 2. VerifyAuth
-	authed, err := store.VerifyAuth("alice", "alice-secret-key-123")
-	if err != nil || authed.ID != u.ID {
-		t.Fatalf("VerifyAuth failed: %v", err)
-	}
-
-	if _, err := store.VerifyAuth("alice", "wrong-pw"); err != ErrInvalidAuth {
-		t.Errorf("expected ErrInvalidAuth on bad password, got: %v", err)
-	}
-
-	// 3. SSO Link and Lookup
-	err = store.LinkSSO(u.ID, "sso-uuid-alice", "alice_sso", "alice@urlxl.com")
-	if err != nil {
-		t.Fatalf("LinkSSO failed: %v", err)
-	}
-
+	// 2. Lookup by subject, username and ID.
 	bySub, err := store.GetBySSOSub("sso-uuid-alice")
 	if err != nil || bySub.ID != u.ID || bySub.SSOUsername != "alice_sso" {
 		t.Fatalf("GetBySSOSub failed: %+v, err: %v", bySub, err)
 	}
-
-	// 4. Paper Recovery
-	err = store.SetPaperRecovery(u.ID, "KYPASS-ABCD-1234-EFGH")
-	if err != nil {
-		t.Fatalf("SetPaperRecovery failed: %v", err)
+	if byName, err := store.GetByUsername("ALICE"); err != nil || byName.ID != u.ID {
+		t.Fatalf("GetByUsername is not case-insensitive: %+v, err: %v", byName, err)
+	}
+	if _, err := store.GetBySSOSub("nobody"); err != ErrNotFound {
+		t.Errorf("expected ErrNotFound, got: %v", err)
 	}
 
-	recUser, err := store.VerifyPaperRecovery("alice", "KYPASS-ABCD-1234-EFGH")
-	if err != nil || recUser.ID != u.ID {
-		t.Fatalf("VerifyPaperRecovery failed: %v", err)
+	// 3. Role and activation changes.
+	if err := store.SetRole(u.ID, RoleUser); err != nil {
+		t.Fatalf("SetRole failed: %v", err)
+	}
+	if err := store.Deactivate(u.ID); err != nil {
+		t.Fatalf("Deactivate failed: %v", err)
+	}
+	if got, _ := store.Get(u.ID); got.Active || got.Role != RoleUser {
+		t.Errorf("role/active change did not stick: %+v", got)
+	}
+	if err := store.Reactivate(u.ID); err != nil {
+		t.Fatalf("Reactivate failed: %v", err)
 	}
 
-	if _, err := store.VerifyPaperRecovery("alice", "KYPASS-WRONG"); err != ErrInvalidAuth {
-		t.Errorf("expected ErrInvalidAuth on wrong recovery code, got: %v", err)
-	}
-
-	// 5. Reload store from disk
+	// 4. Reload store from disk.
 	store2, err := NewStore(dir)
 	if err != nil {
 		t.Fatalf("reload NewStore failed: %v", err)
 	}
-
 	uReloaded, err := store2.Get(u.ID)
-	if err != nil || uReloaded.SSOSub != "sso-uuid-alice" {
+	if err != nil || uReloaded.SSOSub != "sso-uuid-alice" || !uReloaded.Active {
 		t.Errorf("reloaded user mismatch: %+v, err: %v", uReloaded, err)
+	}
+}
+
+func TestLinkSSORefusesASubjectHeldByAnotherAccount(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	alice, err := store.CreateSSOUser("alice", RoleUser, "sub-alice", "alice", "")
+	if err != nil {
+		t.Fatalf("CreateSSOUser: %v", err)
+	}
+	bob, err := store.CreateSSOUser("bob", RoleUser, "sub-bob", "bob", "")
+	if err != nil {
+		t.Fatalf("CreateSSOUser: %v", err)
+	}
+
+	if err := store.LinkSSO(bob.ID, "sub-alice", "bob", ""); err == nil {
+		t.Fatal("one KySignOn identity must not resolve to two accounts")
+	}
+	if got, _ := store.GetBySSOSub("sub-alice"); got.ID != alice.ID {
+		t.Errorf("alice lost her subject: %+v", got)
 	}
 }

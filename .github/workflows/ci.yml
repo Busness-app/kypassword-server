@@ -41,7 +41,7 @@ jobs:
         run: go test -race -count=1 ./...
 
       - name: go build
-        run: go build -o /tmp/kypassword-server ./cmd/server/main.go
+        run: go build -o /tmp/kypassword-server ./cmd/server
 
   frontend:
     name: Frontend (Vite/React)

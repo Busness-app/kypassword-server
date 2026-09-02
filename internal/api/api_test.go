@@ -2,15 +2,13 @@ package api
 
 import (
 	"bytes"
-	"crypto/hmac"
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 
 	"kypassword-server/internal/sso"
@@ -19,7 +17,24 @@ import (
 
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
+	return newTestServerWithUsers(t, "")
+}
+
+// newTestServerWithUsers seeds config/users.json before the server opens it, which is the
+// only way to produce an account the current code cannot create — a legacy record with no
+// KySignOn identity. Pass "" for a fresh install.
+func newTestServerWithUsers(t *testing.T, usersJSON string) *Server {
+	t.Helper()
 	dir := t.TempDir()
+	if usersJSON != "" {
+		if err := os.MkdirAll(dir+"/config", 0700); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		if err := os.WriteFile(dir+"/config/users.json", []byte(usersJSON), 0600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+	}
+
 	srv, err := NewServer(Config{
 		DataDir:       dir + "/data",
 		ConfigDir:     dir + "/config",
@@ -32,70 +47,39 @@ func newTestServer(t *testing.T) *Server {
 	return srv
 }
 
-func TestServerSetupAndAuth(t *testing.T) {
-	srv := newTestServer(t)
-	handler := srv.Routes()
+// signedInUser provisions an account the way KySignOn would and returns it with a session
+// cookie. Sessions are only ever issued after an SSO login now, so tests start here.
+func signedInUser(t *testing.T, srv *Server, username string, role users.Role) (users.User, *http.Cookie) {
+	t.Helper()
+	u, err := srv.users.CreateSSOUser(username, role, "sub-"+username, username, username+"@example.com")
+	if err != nil {
+		t.Fatalf("CreateSSOUser(%q): %v", username, err)
+	}
 
-	// 1. Check Setup: should be required initially
-	req := httptest.NewRequest(http.MethodGet, "/api/setup", nil)
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("GET /api/setup status = %d", rec.Code)
+	if err := srv.startSession(rec, httptest.NewRequest(http.MethodGet, "/", nil), u.ID); err != nil {
+		t.Fatalf("startSession: %v", err)
 	}
-	var setupResp map[string]any
-	_ = json.NewDecoder(rec.Body).Decode(&setupResp)
-	if setupResp["setupRequired"] != true {
-		t.Fatalf("expected setupRequired = true, got: %+v", setupResp)
-	}
-
-	// 2. Initialize Setup
-	initBody, _ := json.Marshal(map[string]string{
-		"username": "admin",
-		"password": "admin-super-password",
-	})
-	req = httptest.NewRequest(http.MethodPost, "/api/setup", bytes.NewReader(initBody))
-	rec = httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("POST /api/setup status = %d", rec.Code)
-	}
-
-	// Subsequent setup should be forbidden
-	req = httptest.NewRequest(http.MethodPost, "/api/setup", bytes.NewReader(initBody))
-	rec = httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("second POST /api/setup status = %d, want 403", rec.Code)
-	}
-
-	// 3. Login
-	loginBody, _ := json.Marshal(map[string]string{
-		"username": "admin",
-		"password": "admin-super-password",
-	})
-	req = httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewReader(loginBody))
-	rec = httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("POST /api/auth/login status = %d", rec.Code)
-	}
-
-	var sessionCookie *http.Cookie
 	for _, c := range rec.Result().Cookies() {
 		if c.Name == "kypass_session" {
-			sessionCookie = c
+			return u, c
 		}
 	}
-	if sessionCookie == nil {
-		t.Fatalf("expected kypass_session cookie after login")
-	}
+	t.Fatal("no session cookie was issued")
+	return users.User{}, nil
+}
 
-	// 4. Authenticated /api/auth/me
-	req = httptest.NewRequest(http.MethodGet, "/api/auth/me", nil)
-	req.AddCookie(sessionCookie)
-	rec = httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
+func TestAuthenticatedSessionAndMe(t *testing.T) {
+	// There is no login endpoint to drive; a session comes from the SSO callback, which
+	// TestSSOCallbackStillMatchesOnSub covers end to end. This checks that a session,
+	// once held, authenticates.
+	srv := newTestServer(t)
+	u, cookie := signedInUser(t, srv, "admin", users.RoleAdmin)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/auth/me", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /api/auth/me status = %d", rec.Code)
 	}
@@ -105,17 +89,24 @@ func TestServerSetupAndAuth(t *testing.T) {
 	if meResp["authenticated"] != true {
 		t.Errorf("expected authenticated=true in /api/auth/me: %+v", meResp)
 	}
+	if user, ok := meResp["user"].(map[string]any); !ok || user["id"] != u.ID {
+		t.Errorf("unexpected user in /api/auth/me: %+v", meResp)
+	}
+
+	// Without the cookie the same route must refuse.
+	rec = httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/auth/me", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("unauthenticated GET /api/auth/me = %d, want 401", rec.Code)
+	}
 }
 
 func TestVaultOperationsAndConflicts(t *testing.T) {
 	srv := newTestServer(t)
 	handler := srv.Routes()
 
-	// Create user & log in
-	u, _ := srv.users.Create("bob", "bob-password-123", users.RoleUser)
-	rec := httptest.NewRecorder()
-	_ = srv.startSession(rec, httptest.NewRequest(http.MethodGet, "/", nil), u.ID)
-	sessCookie := rec.Result().Cookies()[0]
+	_, sessCookie := signedInUser(t, srv, "bob", users.RoleUser)
+	var rec *httptest.ResponseRecorder
 
 	// 1. Initial vault upload
 	v1Payload, _ := json.Marshal(VaultUploadRequest{
@@ -179,10 +170,8 @@ func TestDevicePairingFlow(t *testing.T) {
 	srv := newTestServer(t)
 	handler := srv.Routes()
 
-	u, _ := srv.users.Create("carol", "carol-password-123", users.RoleUser)
-	rec := httptest.NewRecorder()
-	_ = srv.startSession(rec, httptest.NewRequest(http.MethodGet, "/", nil), u.ID)
-	sessCookie := rec.Result().Cookies()[0]
+	_, sessCookie := signedInUser(t, srv, "carol", users.RoleUser)
+	var rec *httptest.ResponseRecorder
 
 	// 1. User initiates pairing in UI
 	req := httptest.NewRequest(http.MethodPost, "/api/devices/pairing/start", nil)
@@ -227,7 +216,7 @@ func TestDevicePairingFlow(t *testing.T) {
 	}
 }
 
-func TestSSOAndSyncWebhook(t *testing.T) {
+func TestSSOCallbackAutoProvisions(t *testing.T) {
 	srv := newTestServer(t)
 	handler := srv.Routes()
 
@@ -302,48 +291,17 @@ func TestSSOAndSyncWebhook(t *testing.T) {
 		t.Errorf("dave auto-provision mismatch: %+v, err: %v", dave, err)
 	}
 
-	// 3. Test Directory Sync Webhook
-	ev := SyncWebhookEvent{
-		Event: "user.created",
-		User: SyncUserPayload{
-			ID:       "replicated-user-888",
-			Username: "replicated_eve",
-			Role:     "user",
-			Active:   true,
-			Email:    "eve@urlxl.com",
-		},
-	}
-	body, _ := json.Marshal(ev)
-	mac := hmac.New(sha256.New, []byte(srv.pairingSecret))
-	mac.Write(body)
-	sig := hex.EncodeToString(mac.Sum(nil))
-
-	req = httptest.NewRequest(http.MethodPost, "/api/sync/webhook", bytes.NewReader(body))
-	req.Header.Set("X-Sync-Signature", sig)
-	rec = httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("POST /api/sync/webhook status = %d", rec.Code)
-	}
-
-	eve, err := srv.users.GetBySSOSub("replicated-user-888")
-	if err != nil || eve.Username != "replicated_eve" {
-		t.Errorf("replicated user mismatch: %+v, err: %v", eve, err)
-	}
 }
 
 func TestAuditLogIntegrity(t *testing.T) {
 	srv := newTestServer(t)
 	handler := srv.Routes()
 
-	admin, _ := srv.users.Create("admin", "admin-pw", users.RoleAdmin)
-	rec := httptest.NewRecorder()
-	_ = srv.startSession(rec, httptest.NewRequest(http.MethodGet, "/", nil), admin.ID)
-	sessCookie := rec.Result().Cookies()[0]
+	_, sessCookie := signedInUser(t, srv, "admin", users.RoleAdmin)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/audit/verify", nil)
 	req.AddCookie(sessCookie)
-	rec = httptest.NewRecorder()
+	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /api/audit/verify status = %d", rec.Code)

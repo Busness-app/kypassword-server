@@ -1,6 +1,6 @@
 import React, { useState, useEffect, FormEvent } from "react";
 import { getJSON, postJSON, putJSON, toErrorMessage } from "../lib/api";
-import { Users, Shield, ScrollText, CheckCircle2, AlertCircle, Plus, ShieldCheck } from "lucide-react";
+import { Users, Shield, ScrollText, CheckCircle2, AlertCircle, ShieldCheck } from "lucide-react";
 
 type User = {
   id: string;
@@ -42,11 +42,6 @@ export function AdminPanel() {
     clientSecret: "",
     autoProvision: true,
   });
-
-  const [newUsername, setNewUsername] = useState("");
-  const [newPassword, setNewPassword] = useState("");
-  const [newRole, setNewRole] = useState<"admin" | "user">("user");
-  const [showAddUser, setShowAddUser] = useState(false);
 
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
@@ -97,30 +92,6 @@ export function AdminPanel() {
       clientId: "kypasswords",
       autoProvision: true,
     }));
-  };
-
-  const handleCreateUser = async (e: FormEvent) => {
-    e.preventDefault();
-    setBusy(true);
-    setMessage("");
-    setError("");
-
-    try {
-      const newUser = await postJSON<User>("/api/admin/users", {
-        username: newUsername,
-        password: newPassword,
-        role: newRole,
-      });
-      setUsersList((prev) => [...prev, newUser]);
-      setShowAddUser(false);
-      setNewUsername("");
-      setNewPassword("");
-      setMessage(`User "${newUser.username}" created.`);
-    } catch (err) {
-      setError(toErrorMessage(err, "Failed to create user"));
-    } finally {
-      setBusy(false);
-    }
   };
 
   const handleToggleDeactivate = async (u: User) => {
@@ -283,11 +254,13 @@ export function AdminPanel() {
         </div>
       ) : activeTab === "users" ? (
         <div>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem" }}>
+          <div style={{ marginBottom: "1.5rem" }}>
             <h3 style={{ margin: 0 }}>Registered User Accounts</h3>
-            <button className="btn btn-primary btn-sm" onClick={() => setShowAddUser(true)}>
-              <Plus size={14} /> Add User
-            </button>
+            <p style={{ color: "var(--ink-muted)", fontSize: "0.85rem", marginTop: "0.4rem", marginBottom: 0 }}>
+              Accounts are managed in KySignOn. They appear here when KySignOn replicates them or
+              when someone signs in for the first time. Role, deactivate and reactivate below are
+              local overrides.
+            </p>
           </div>
 
           <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
@@ -328,59 +301,6 @@ export function AdminPanel() {
             ))}
           </div>
 
-          {showAddUser ? (
-            <div className="modal-overlay" onClick={() => setShowAddUser(false)}>
-              <div className="modal-card" onClick={(e) => e.stopPropagation()}>
-                <div className="modal-header">
-                  <h3>Create New User</h3>
-                  <button className="btn btn-quiet btn-sm" onClick={() => setShowAddUser(false)}>
-                    ✕
-                  </button>
-                </div>
-                <form onSubmit={handleCreateUser}>
-                  <div className="input-group">
-                    <label className="input-label">Username</label>
-                    <input
-                      type="text"
-                      className="input"
-                      value={newUsername}
-                      onChange={(e) => setNewUsername(e.target.value)}
-                      required
-                    />
-                  </div>
-                  <div className="input-group">
-                    <label className="input-label">Initial Password</label>
-                    <input
-                      type="password"
-                      className="input"
-                      value={newPassword}
-                      onChange={(e) => setNewPassword(e.target.value)}
-                      required
-                    />
-                  </div>
-                  <div className="input-group">
-                    <label className="input-label">Role</label>
-                    <select
-                      className="select"
-                      value={newRole}
-                      onChange={(e) => setNewRole(e.target.value as "admin" | "user")}
-                    >
-                      <option value="user">Standard User</option>
-                      <option value="admin">Administrator</option>
-                    </select>
-                  </div>
-                  <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.5rem" }}>
-                    <button type="button" className="btn btn-secondary" onClick={() => setShowAddUser(false)}>
-                      Cancel
-                    </button>
-                    <button type="submit" className="btn btn-primary" disabled={busy}>
-                      Create User
-                    </button>
-                  </div>
-                </form>
-              </div>
-            </div>
-          ) : null}
         </div>
       ) : (
         <div>

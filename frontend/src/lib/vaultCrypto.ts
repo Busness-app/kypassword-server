@@ -30,32 +30,9 @@ export function hexToBytes(hex: string): Uint8Array {
   return bytes;
 }
 
-// Derive client authentication secret (so raw master password is never sent over wire)
-export async function deriveAuthSecret(password: string, saltHex: string, iterations = 600000): Promise<string> {
-  const enc = new TextEncoder();
-  const salt = hexToBytes(saltHex);
-
-  const baseKey = await crypto.subtle.importKey(
-    "raw",
-    enc.encode(password),
-    { name: "PBKDF2" },
-    false,
-    ["deriveBits"]
-  );
-
-  const derived = await crypto.subtle.deriveBits(
-    {
-      name: "PBKDF2",
-      salt: salt as BufferSource,
-      iterations,
-      hash: "SHA-256",
-    },
-    baseKey,
-    256
-  );
-
-  return bytesToHex(new Uint8Array(derived));
-}
+// There is deliberately no deriveAuthSecret here any more. It produced a password-derived
+// verifier for the login endpoint, and the login endpoint is gone: the master password is
+// key material for the envelope below and is never transmitted in any form.
 
 // Wrap vault master key into an encrypted envelope using password or recovery secret
 export async function wrapVaultKey(vaultKey: Uint8Array, secret: string, iterations = 600000): Promise<string> {

@@ -6,18 +6,70 @@ KyPassword Server is a zero-knowledge KeePass v4 management and synchronization 
 
 1. **Zero-Knowledge KeePass v4 Vault Storage**: Server stores encrypted KDBX v4 vaults and wrapped key envelopes. The server never receives raw master passwords, plaintext vault keys, or unencrypted credential data.
 2. **Key Custody & Envelopes**: Vault master key (256-bit) is wrapped client-side into password-wrapped, paper-recovery-wrapped, and device-wrapped envelopes using PBKDF2/Argon2 + AES-GCM. Changing passwords re-wraps the envelope without re-encrypting the full KDBX.
+   KyAuth may upload its local KDBX and password envelope when the server vault is empty; the web client opens both raw-key and KyAuth hex-key KDBX credentials.
 3. **Atomic Sync & Conflict Preservation**: Optimistic concurrency via ETag / version check (`If-Match: "{version}"`). Conflicting uploads are rejected and preserved in `conflicts/` for client deconfliction.
 4. **90-Day Version History & Rollback**: Automatic version snapshots with 90-day retention policy and one-click rollback.
-5. **KySignOn SSO & Directory Replication**: Interoperable with KySignOn and standard OIDC/PKCE IdPs (`/api/auth/oidc/login`, `/api/sync/webhook`).
+5. **KySignOn SSO & Directory Replication**: KySignOn is the sole authenticator and sole directory (`/api/auth/oidc/login`, `/api/sync/webhook`). There is no local login, no local account creation and no server-side credential of any kind. See "Replication" and "Authentication" below.
 6. **Native Device Pairing**: 90-second PIN and QR code protocol (`/api/devices/pairing/*`) for mobile apps and browser extensions.
 7. **Tamper-Evident Audit Logging**: Cryptographic hash-chained audit trail (`/api/audit/*`).
 8. **KySecurity Patina Interface**: React + TypeScript frontend using Space Grotesk, IBM Plex Mono, and Patina dark theme.
+
+## Authentication
+
+KySignOn is the only way in. The user record holds **no** authentication material —
+no password hash, no salt, no client-derived verifier, no recovery hash. A test in
+`internal/users/users_test.go` asserts those JSON keys never reappear; if you find
+yourself adding one, the design has been misread.
+
+- Accounts are matched on the OIDC `sub` alone, which is the KySignOn user ID
+  (`kysignon-server/internal/oauth/oauth.go:310,326`). Never match on username: doing
+  so hands any KySignOn identity the local account that shares its name, and its vault.
+- The master password is not a credential. It unwraps the vault key envelope in the
+  browser and is never transmitted. Changing it is a client-side re-wrap against
+  `PUT /api/vault/envelopes`.
+- Paper recovery unlocks the vault, not the site.
+- SSO settings come from `KYPASSWORD_OIDC_ISSUER`, `_CLIENT_ID`, `_CLIENT_SECRET`
+  (optional `_REDIRECT_URI`, `_AUTO_PROVISION`) and take precedence over
+  `config/sso.json`. `PUT /api/admin/sso` answers 409 while they are set. Without an
+  identity provider, or with an active account that has no `ssoSub`, the server
+  refuses to start.
+
+## Replication
+
+KySignOn's sync engine dictates the wire format; KyPassword is the receiver and has no
+say in it. `POST /api/sync/webhook` receives:
+
+- a **bare SCIM 2.0 User resource** as the body — not an envelope with an `event` key
+- the event in the **`X-KySignOn-Event-Type`** header: `user.created`, `user.updated`,
+  `user.deleted`
+- **`X-KySignOn-Signature`**: HMAC-SHA256 over `timestamp + "." + body`, with the
+  timestamp in `X-KySignOn-Timestamp` — not over the body alone
+- `Authorization: Bearer <secret>`, plus `X-KySignOn-Event-Id` / `Idempotency-Key`
+
+This was previously mismatched: KyPassword expected `{"event","user"}` and an
+`X-Sync-Signature` over the body only, so every event fell out of the switch and
+returned 200 having done nothing, while the bearer token made KySignOn record it as
+delivered. **Both sides looked healthy and no account was ever provisioned.** Any change
+here needs a round-trip test against a real KySignOn payload, not a unit test against our
+own encoder — the bug was that our encoder and theirs disagreed.
+
+Status codes matter to the sender (`kysignon-server/internal/sync/sync.go`, `deliver()`):
+it treats 2xx as success, plus 404 on `user.deleted` and 409 on `user.created`. A 404 on
+`user.updated` is a delivery *failure* it will retry, so an update naming an unknown
+subject provisions the account when auto-provisioning is on and otherwise returns 200.
+
+Keep the configured callback URL free of `/scim`, and do not let it end in `/Users` or
+`/v2`: `resolveSCIMURL()` switches to RESTful SCIM on those, sending PUT and DELETE to
+paths KyPassword does not serve.
+
+A `user.deleted` deactivates the account and **never** deletes the vault. The vault is
+the user's, not the directory's.
 
 ## Verification
 
 - Backend: `gofmt -l .` (must be empty), `go vet ./...`, `go test -race ./...`
 - Frontend: `npm test && npm run build` in `frontend/` (`build` is `tsc && vite build`, so it is the typecheck gate)
-- Daemon build: `go build -o ./kypassword-server ./cmd/server/main.go`
+- Daemon build: `go build -o ./kypassword-server ./cmd/server`
 - Docker build: `docker build -t kypassword-server:latest .`
 - Dependency vulns: `govulncheck ./...` and `npm audit --audit-level=high` in `frontend/`
 
@@ -66,6 +118,16 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
 - `frontend/src/lib/storage.ts`: manages the persistent IndexedDB `keys` vault on trusted devices
   to allow 1-click SSO access without typing a password; explicit "Forget This Device" controls
   clear stored secrets from browser storage.
+- `frontend/src/lib/kdbx.ts`: client-side KDBX v4 vault. `open()` tries the raw 256-bit vault key
+  first and, only on `InvalidKey`, retries with the same key as a hexadecimal password string —
+  which is how KyAuth's KDBX library represents it (`KdbxPasswordVault.kt`, `Credentials.from(
+  EncryptedValue.fromString(bytesToHex(vaultKey)))`). Both attempts copy the buffer, because
+  `Kdbx.load` consumes it. A vault opened the KyAuth way is saved back the same way, so it stays
+  readable on Android.
+  ponytail: `createNew` writes AES-KDF while KyAuth writes Argon2, so a vault's KDF depends on which
+  client last saved it. Both clients read both. Argon2 works in the browser (the WASM is inlined) but
+  not under `node --test`, which is why the interop test forces AES — upgrade path is a
+  browser-capable test runner, then unify on Argon2.
 - `frontend/src/lib/csvImport.ts`: zero-knowledge RFC 4180 CSV parser and multi-format importer supporting
   Google Chrome, 1Password, Bitwarden, LastPass, DashPass (Dashlane), and generic CSV formats. Provider
   folder values are split on `/` and `\` into nested KeePass groups, reusing existing groups by path;

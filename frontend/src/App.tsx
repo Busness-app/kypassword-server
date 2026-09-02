@@ -158,11 +158,6 @@ export function App() {
     }
   };
 
-  const handleLoginSuccess = async (u: User, password?: string) => {
-    setUser(u);
-    await initVault(u, password);
-  };
-
   const handleUnlockSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user) return;
@@ -248,7 +243,7 @@ export function App() {
   }
 
   if (!user) {
-    return <LoginPage onLoginSuccess={handleLoginSuccess} />;
+    return <LoginPage />;
   }
 
   return (
@@ -347,7 +342,9 @@ export function App() {
               </button>
             </div>
             <p style={{ color: "var(--ink-muted)", fontSize: "0.85rem", marginBottom: "1.25rem" }}>
-              Because KyPasswords enforces end-to-end zero-knowledge encryption, enter your master password once to unlock and trust this device for 1-click SSO.
+              You are signed in — KySignOn has proved who you are. Unlocking is separate: your master
+              password decrypts the vault here in your browser, and is never sent to the server.
+              Enter it once to trust this device for 1-click unlock.
             </p>
 
             {unlockError ? (

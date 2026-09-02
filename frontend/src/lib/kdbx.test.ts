@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { KeePassVault } from "./kdbx.js";
 import * as kdbxweb from "kdbxweb";
 
-const { Consts } = (kdbxweb as { default?: typeof kdbxweb }).default ?? kdbxweb;
+const { Consts, Credentials, ProtectedValue, Kdbx } =
+  (kdbxweb as { default?: typeof kdbxweb }).default ?? kdbxweb;
 
 const vaultKey = () => {
   const key = new Uint8Array(32);
@@ -56,5 +57,18 @@ describe("KDBX vault round-trip", () => {
       () => KeePassVault.open(exported, wrong),
       (err: unknown) => (err as { code?: string }).code === Consts.ErrorCodes.InvalidKey,
     );
+  });
+
+  test("opens a KyAuth vault encrypted with the hexadecimal vault key", async () => {
+    const key = vaultKey();
+    const credentials = new Credentials(ProtectedValue.fromString(
+      Array.from(key).map((byte) => byte.toString(16).padStart(2, "0")).join(""),
+    ));
+    const database = Kdbx.create(credentials, "KyAuth Passwords");
+    database.header.setKdf(Consts.KdfId.Aes);
+
+    const reopened = await KeePassVault.open(await database.save(), key);
+
+    assert.equal(reopened.getGroups()[0].name, "KyAuth Passwords");
   });
 });

@@ -58,7 +58,12 @@ func (s *Store) loadFromDisk() error {
 }
 
 // Load returns the current SSOSettings.
+// Load returns the active settings. The environment takes precedence over sso.json when
+// it configures SSO at all — see env.go for why it has to be able to.
 func (s *Store) Load() SSOSettings {
+	if fromEnv, ok := SettingsFromEnv(); ok {
+		return fromEnv
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.settings

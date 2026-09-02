@@ -7,20 +7,30 @@ server designed to run alongside KyPost-Net behind the same reverse proxy.
 
 - The system is end-to-end, zero-knowledge. The server must never receive an
   unhashed master password, plaintext vault key, or decrypted KeePass data.
-- Reuse KyPost's existing client-derived authentication protocol, KDF choices,
-  login parameters, lockout behavior, and optional CAPTCHA behavior.
-- The server stores only the salted hash of the client-derived authentication
-  value. It never stores or receives the raw master password.
+- **KySignOn is the only authenticator and the only directory.** There is no
+  local login and no local account creation, not even break-glass. Site access
+  is exclusively an OIDC session from KySignOn; accounts are keyed on the OIDC
+  `sub`, which is the KySignOn user ID. If KySignOn is down, nobody reaches the
+  web vault — the documented outage path is `GET /api/vault/kdbx`, which returns
+  a standard KDBX v4 file that opens in any KeePass client.
+- **The server stores no authentication material at all.** Not a password, not a
+  salt, not a client-derived verifier. This supersedes the earlier instruction to
+  reuse KyPost's client-derived authentication protocol: that protocol
+  authenticated against this server, and this server no longer authenticates
+  anyone. Nothing here may reintroduce a credential field on the user record.
+- The master password is not a credential. It is solely the client-side secret
+  that unwraps the vault key envelope, after an SSO session already exists.
 - The client generates a cryptographically random vault key. The KDBX is
-  encrypted with that key; the login password is not used directly as the KDBX
+  encrypted with that key; the master password is not used directly as the KDBX
   encryption key.
 - The client stores password-wrapped, recovery-wrapped, and device-wrapped
   copies of the vault key. Password changes re-wrap the vault key client-side;
-  they do not require re-encrypting the entire KDBX.
-- Recovery is paper-based. The paper unlock secret is hashed and stored beside
-  the authentication verifier. It provides site access and vault access by
-  unlocking the recovery-wrapped vault key, after which the user must set a new
-  master password. The old password and remote device keys are invalidated.
+  they do not require re-encrypting the entire KDBX, and they involve no server
+  call beyond storing the new envelope.
+- Recovery is paper-based and unlocks the **vault, not the site**. The
+  recovery-wrapped envelope lives in vault metadata and is unwrapped client-side
+  once an SSO session exists. No recovery secret or hash is stored on the user
+  record — that would be a second way to authenticate, which SSO-only forbids.
 - Wrapped key envelopes are stored as encrypted, versioned server-side metadata
   beside the KDBX. Metadata must not contain plaintext keys or secrets.
 - Mobile applications use KyPost's existing QR-code key-sealing method. Reuse

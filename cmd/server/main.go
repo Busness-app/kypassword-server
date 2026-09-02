@@ -15,9 +15,18 @@ import (
 	"time"
 
 	"kypassword-server/internal/api"
+	"kypassword-server/internal/sso"
+	"kypassword-server/internal/users"
 )
 
 func main() {
+	if handled, err := runMigrationCommand(os.Args[1:], os.Stdout); handled {
+		if err != nil {
+			log.Fatalf("%v", err)
+		}
+		return
+	}
+
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "5877"
@@ -28,10 +37,10 @@ func main() {
 		dataDir = "./data"
 	}
 
-	configDir := os.Getenv("CONFIG_DIR")
-	if configDir == "" {
-		configDir = "./config"
-	}
+	configDir := configDirFromEnv()
+
+	requireMigratedAccounts(configDir)
+	requireIdentityProvider(configDir)
 
 	retentionDays := 90
 	if r := os.Getenv("RETENTION_DAYS"); r != "" {
@@ -126,4 +135,60 @@ func main() {
 	defer cancel()
 	_ = httpServer.Shutdown(ctx)
 	log.Println("server stopped.")
+}
+
+// requireMigratedAccounts refuses to start while any active account has no KySignOn
+// identity. It runs before the listener opens, so a half-migrated upgrade never serves a
+// single request — such an account cannot sign in, and replication would provision a
+// second account for the same person alongside it.
+func requireMigratedAccounts(configDir string) {
+	store, err := users.NewStore(configDir)
+	if err != nil {
+		log.Fatalf("failed to read accounts from %s: %v", configDir, err)
+	}
+
+	unlinked := users.UnlinkedActive(store)
+	if len(unlinked) == 0 {
+		return
+	}
+
+	log.Printf("KyPassword now authenticates only through KySignOn, and %d active account(s) have no KySignOn identity:", len(unlinked))
+	for _, u := range unlinked {
+		log.Printf("  - %s (id %s)", u.Username, u.ID)
+	}
+	log.Printf("Link each one:      kypassword-server link-sso --username <name> --sub <kysignon-user-id>")
+	log.Printf("Or retire it:       kypassword-server deactivate --username <name>")
+	log.Printf("The KySignOn user ID is the value shown in its admin user list, and is the same value it puts in the OIDC 'sub' claim.")
+	os.Exit(1)
+}
+
+// requireIdentityProvider refuses to start without an identity provider. KySignOn is the
+// only authenticator, so a server without one can authenticate nobody — starting would
+// only serve 503s to every sign-in attempt, and there is no local admin who could fix it
+// from the UI.
+func requireIdentityProvider(configDir string) {
+	settings := sso.NewStore(configDir).Load()
+	if settings.Enabled && settings.IssuerURL != "" && settings.ClientID != "" {
+		// A client secret is deliberately not required here. sso.ExchangeCode omits it
+		// when empty and always sends the PKCE code_verifier, so a public client is a
+		// supported configuration and refusing to start would break one. But a missing
+		// secret is far more often an incomplete confidential setup than a deliberate
+		// public one, and that only surfaces as a token-exchange failure at first login.
+		// So say which mode is in force, at boot, where an operator will see it.
+		mode := "confidential client"
+		if settings.ClientSecret == "" {
+			mode = "public client (no client secret configured; token exchange relies on PKCE alone)"
+		}
+		log.Printf("KySignOn: %s, issuer %s, client %s", mode, settings.IssuerURL, settings.ClientID)
+		return
+	}
+
+	log.Printf("KyPassword authenticates only through KySignOn, and no identity provider is configured.")
+	log.Printf("Set these and restart:")
+	log.Printf("  %s        e.g. https://signon.example.com", sso.EnvIssuer)
+	log.Printf("  %s     the client ID KySignOn issued for KyPassword", sso.EnvClientID)
+	log.Printf("  %s the matching client secret, required for a confidential client", sso.EnvClientSecret)
+	log.Printf("Optional: %s, %s (defaults to true).", sso.EnvRedirectURI, sso.EnvAutoProvision)
+	log.Printf("These take precedence over %s/sso.json and cannot be changed from the admin UI.", configDir)
+	os.Exit(1)
 }
