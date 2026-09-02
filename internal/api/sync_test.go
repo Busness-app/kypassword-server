@@ -117,8 +117,15 @@ func TestSyncWebhookRejectsBadSignatureDespiteValidBearer(t *testing.T) {
 			mac.Write(body)
 			r.Header.Set("X-KySignOn-Signature", hex.EncodeToString(mac.Sum(nil)))
 		},
-		"signature over a different body": func(r *http.Request) {
-			r.Header.Set("X-KySignOn-Signature", "00"+r.Header.Get("X-KySignOn-Signature")[2:])
+		"signature with a flipped leading digit": func(r *http.Request) {
+			// Flip rather than overwrite: hard-coding "00" left the signature
+			// untouched, and the case passing, whenever the real one began "00".
+			sig := r.Header.Get("X-KySignOn-Signature")
+			flipped := "0"
+			if sig[0] == '0' {
+				flipped = "1"
+			}
+			r.Header.Set("X-KySignOn-Signature", flipped+sig[1:])
 		},
 		"replayed outside the skew window": func(r *http.Request) {
 			old := time.Now().UTC().Add(-30 * time.Minute).Format(time.RFC3339)
