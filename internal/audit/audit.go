@@ -7,10 +7,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/Busness-app/ky-primitives/auditchain"
 	"time"
 )
 
@@ -31,10 +34,30 @@ type Entry struct {
 	Details   string    `json:"details,omitempty"`
 	PrevHash  string    `json:"prevHash"`
 	Hash      string    `json:"hash"`
+}
 
-	// V is the chain version: 0 (absent) for records written before the chain
-	// was keyed, 1 for HMAC records. See Store.chainHash.
-	V int `json:"v,omitempty"`
+// fieldsOf is the entry content the chain authenticates. The order is part of the
+// chain format: changing it invalidates every stored digest.
+func fieldsOf(e Entry) []string {
+	return []string{
+		e.Timestamp.UTC().Format(time.RFC3339Nano),
+		e.Action,
+		e.UserID,
+		e.DeviceID,
+		e.IPAddress,
+		e.Details,
+	}
+}
+
+// recordOf reads a stored entry as a chain record. Entry indices are zero-based
+// and chain sequences are one-based.
+func recordOf(e Entry) auditchain.Record {
+	return auditchain.Record{
+		Seq:    uint64(e.Index) + 1,
+		Prev:   e.PrevHash,
+		Hash:   e.Hash,
+		Fields: fieldsOf(e),
+	}
 }
 
 // Store manages the append-only audit trail file.
@@ -43,24 +66,24 @@ type Store struct {
 	filePath  string
 	statePath string
 	key       []byte
-	state     chainState
-	lastHash  string
-	count     int64
+	chain     *auditchain.Chain
+	anchor    auditchain.Anchor
 }
 
-// chainHash is the digest binding an entry to its predecessor. It is the single
-// definition of the chain algorithm: Log and VerifyIntegrity both use it, so they
-// cannot drift apart.
+// legacyHash is the digest this server used before the chain moved to the shared
+// format: an unkeyed SHA-256 before the chain was keyed, an HMAC after.
 //
-// Version 0 entries predate the key and are unkeyed, which is why Store.anchor
-// exists: without it an attacker could downgrade a keyed entry to version 0 and
-// recompute its hash with the public algorithm.
-func (s *Store) chainHash(e Entry) string {
+// Both joined the fields with a bare "|", so content carrying the delimiter could
+// be shifted into a neighbouring field without changing the digest. It is retained
+// only to recognise entries written that way, never to write one.
+//
+// Deprecated: new entries are written by auditchain.
+func (s *Store) legacyHash(e Entry, keyed bool) string {
 	raw := fmt.Sprintf("%d|%s|%s|%s|%s|%s|%s|%s",
 		e.Index, e.Timestamp.Format(time.RFC3339Nano), e.Action,
 		e.UserID, e.DeviceID, e.IPAddress, e.Details, e.PrevHash)
 
-	if e.V == 0 {
+	if !keyed {
 		sum := sha256.Sum256([]byte(raw))
 		return hex.EncodeToString(sum[:])
 	}
@@ -74,35 +97,38 @@ func (s *Store) chainHash(e Entry) string {
 // than beside the log. Hashes alone cannot detect a log that has had records
 // removed, because what remains still chains correctly; only a record kept out of
 // the attacker's reach can.
+// chainState is the anchor persisted outside the log: how many entries it held
+// and the digest of the last one. Without it a log truncated at the end verifies
+// perfectly.
 type chainState struct {
-	// Anchor is the first index required to be keyed.
-	Anchor int64 `json:"anchor"`
-	// Count is how many entries the log had when last written, and Hash is the
-	// hash of entry Count-1.
-	Count int64  `json:"count"`
+	Count uint64 `json:"count"`
 	Hash  string `json:"hash,omitempty"`
+
+	// LegacyAnchor is the first index that the previous format required to be
+	// keyed. It is read only while converting a chain written under that format,
+	// to decide which entries may still carry an unkeyed digest.
+	LegacyAnchor int64 `json:"anchor,omitempty"`
 }
 
-// loadState reads the chain state, creating it on first use, and reports whether
-// this call is the one that created it.
-func loadState(keyDir string, legacyLead int64) (chainState, bool, error) {
+// loadState reads the anchor, creating an empty one on first use.
+func loadState(keyDir string) (chainState, error) {
 	statePath := filepath.Join(keyDir, "audit.state")
 	if data, err := os.ReadFile(statePath); err == nil {
 		var st chainState
 		if err := json.Unmarshal(data, &st); err != nil {
-			return chainState{}, false, fmt.Errorf("audit state file is corrupt: %w", err)
+			return chainState{}, fmt.Errorf("audit state file is corrupt: %w", err)
 		}
-		return st, false, nil
+		return st, nil
 	}
 
 	if err := os.MkdirAll(keyDir, 0700); err != nil {
-		return chainState{}, false, fmt.Errorf("mkdir key dir: %w", err)
+		return chainState{}, fmt.Errorf("mkdir key dir: %w", err)
 	}
-	st := chainState{Anchor: legacyLead}
+	st := chainState{}
 	if err := writeState(statePath, st); err != nil {
-		return chainState{}, false, err
+		return chainState{}, err
 	}
-	return st, true, nil
+	return st, nil
 }
 
 func writeState(statePath string, st chainState) error {
@@ -175,55 +201,168 @@ func NewStore(dir, keyDir string) (*Store, error) {
 		return nil, err
 	}
 
-	filePath := filepath.Join(dir, "audit.jsonl")
 	s := &Store{
-		filePath: filePath,
-		key:      key,
-		lastHash: genesisHash,
-		count:    0,
+		filePath:  filepath.Join(dir, "audit.jsonl"),
+		statePath: filepath.Join(keyDir, "audit.state"),
+		key:       key,
 	}
 
-	// Read existing entries to find the last hash, the count, and how many
-	// unkeyed records the chain opens with.
-	var legacyLead int64
-	countingLead := true
-	if file, err := os.Open(filePath); err == nil {
-		defer file.Close()
-		dec := json.NewDecoder(file)
-		for {
-			var e Entry
-			if err := dec.Decode(&e); err != nil {
-				break
-			}
-			if countingLead && e.V == 0 {
-				legacyLead++
-			} else {
-				countingLead = false
-			}
-			s.lastHash = e.Hash
-			s.count = e.Index + 1
-		}
-	}
-
-	state, firstKeying, err := loadState(keyDir, legacyLead)
+	st, err := loadState(keyDir)
 	if err != nil {
 		return nil, err
 	}
-	s.state = state
-	s.statePath = filepath.Join(keyDir, "audit.state")
+	s.anchor = auditchain.Anchor{Count: st.Count, Hash: st.Hash}
 
-	// An unkeyed chain being opened for the first time since keying has just been
-	// migrated. Anchor its tail with a keyed entry now, rather than leaving it
-	// unprotected until the next real event. Only ever on the first keying: doing
-	// it again later would paper over a log that had been rolled back to its
-	// unkeyed prefix instead of reporting it.
-	if firstKeying && s.count > 0 {
-		if _, err := s.Log("audit.rekey", "", "", "", "audit chain keyed; earlier entries predate the key"); err != nil {
-			return nil, fmt.Errorf("anchor legacy audit chain: %w", err)
-		}
+	entries, err := s.readAll()
+	if err != nil {
+		return nil, err
+	}
+	if entries, err = s.converge(entries, st); err != nil {
+		return nil, err
 	}
 
+	if len(entries) == 0 {
+		s.chain, err = auditchain.New(key)
+		return s, err
+	}
+
+	last := entries[len(entries)-1]
+	if s.chain, err = auditchain.Resume(key, recordOf(last)); err != nil {
+		return nil, err
+	}
+
+	// A tail exactly one entry past the anchor is this store's own append,
+	// interrupted before the anchor was written: only a key holder can produce an
+	// entry that carries its own digest. A longer overrun is left for
+	// VerifyIntegrity to report.
+	if uint64(last.Index)+1 == s.anchor.Count+1 && s.anchor.Count > 0 {
+		s.anchor = s.chain.Anchor()
+		if err := s.saveAnchor(); err != nil {
+			return nil, err
+		}
+	}
 	return s, nil
+}
+
+// readAll returns the log oldest first, or nothing if it does not exist yet.
+func (s *Store) readAll() ([]Entry, error) {
+	file, err := os.Open(s.filePath)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	var entries []Entry
+	dec := json.NewDecoder(file)
+	for {
+		var e Entry
+		if err := dec.Decode(&e); err != nil {
+			break
+		}
+		entries = append(entries, e)
+	}
+	return entries, nil
+}
+
+// saveAnchor persists the anchor beside the key.
+func (s *Store) saveAnchor() error {
+	return writeState(s.statePath, chainState{Count: s.anchor.Count, Hash: s.anchor.Hash})
+}
+
+// converge rewrites a log written under this server's own hashing onto the shared
+// package's digests. It runs once, when the log does not already carry them.
+//
+// Every entry must first verify under whichever digest wrote it, so a log that
+// was already broken is never blessed. An unkeyed digest is accepted only below
+// the index the previous format recorded as the first keyed one — otherwise an
+// attacker could downgrade keyed entries and have the conversion bless them.
+func (s *Store) converge(entries []Entry, st chainState) ([]Entry, error) {
+	if len(entries) == 0 {
+		return entries, nil
+	}
+	if _, err := auditchain.Resume(s.key, recordOf(entries[len(entries)-1])); err == nil {
+		return entries, nil
+	}
+
+	unkeyedLimit := st.LegacyAnchor
+	if st.Count == 0 {
+		unkeyedLimit = int64(len(entries))
+	}
+	if !s.legacyChainVerifies(entries, unkeyedLimit) {
+		// Leave the log exactly as it is. Refusing to open would let anyone who
+		// can write it stop the server; VerifyIntegrity reports what is wrong.
+		return entries, nil
+	}
+
+	chain, err := auditchain.New(s.key)
+	if err != nil {
+		return nil, err
+	}
+	converted := make([]Entry, 0, len(entries))
+	for _, e := range entries {
+		rec, err := chain.Append(fieldsOf(e)...)
+		if err != nil {
+			return nil, err
+		}
+		e.Index, e.PrevHash, e.Hash = int64(rec.Seq)-1, rec.Prev, rec.Hash
+		converted = append(converted, e)
+	}
+
+	if err := s.rewrite(converted); err != nil {
+		return nil, err
+	}
+	s.anchor = chain.Anchor()
+	if err := s.saveAnchor(); err != nil {
+		return nil, err
+	}
+	return converted, nil
+}
+
+// legacyChainVerifies reports whether every entry carries the digest the previous
+// format would have written, with the links and indices intact. An unkeyed digest
+// counts only below unkeyedLimit: otherwise an attacker could downgrade keyed
+// entries and have the conversion bless them.
+func (s *Store) legacyChainVerifies(entries []Entry, unkeyedLimit int64) bool {
+	prev := genesisHash
+	for i, e := range entries {
+		if e.Index != int64(i) || e.PrevHash != prev {
+			return false
+		}
+		switch e.Hash {
+		case s.legacyHash(e, true):
+		case s.legacyHash(e, false):
+			if e.Index >= unkeyedLimit {
+				return false
+			}
+		default:
+			return false
+		}
+		prev = e.Hash
+	}
+	return true
+}
+
+// rewrite replaces the log atomically, so a crash cannot leave it half-converted.
+func (s *Store) rewrite(entries []Entry) error {
+	tmp := s.filePath + ".tmp"
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
+	if err != nil {
+		return err
+	}
+	enc := json.NewEncoder(f)
+	for _, e := range entries {
+		if err := enc.Encode(e); err != nil {
+			f.Close()
+			return err
+		}
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, s.filePath)
 }
 
 // Log records an audit action in the hash-chain.
@@ -232,19 +371,20 @@ func (s *Store) Log(action, userID, deviceID, ip, details string) (Entry, error)
 	defer s.mu.Unlock()
 
 	now := time.Now().UTC()
-
 	entry := Entry{
-		Index:     s.count,
 		Timestamp: now,
 		Action:    action,
 		UserID:    userID,
 		DeviceID:  deviceID,
 		IPAddress: ip,
 		Details:   details,
-		PrevHash:  s.lastHash,
-		V:         chainVersion,
 	}
-	entry.Hash = s.chainHash(entry)
+
+	rec, err := s.chain.Append(fieldsOf(entry)...)
+	if err != nil {
+		return Entry{}, fmt.Errorf("extend audit chain: %w", err)
+	}
+	entry.Index, entry.PrevHash, entry.Hash = int64(rec.Seq)-1, rec.Prev, rec.Hash
 
 	data, err := json.Marshal(entry)
 	if err != nil {
@@ -262,16 +402,14 @@ func (s *Store) Log(action, userID, deviceID, ip, details string) (Entry, error)
 		return Entry{}, err
 	}
 
-	s.lastHash = entry.Hash
-	s.count++
-
-	// Never lower the recorded count: if the log was rolled back and is now being
-	// appended to again, the old mark is the evidence.
-	if s.count > s.state.Count {
-		s.state.Count = s.count
-		s.state.Hash = entry.Hash
-		if err := writeState(s.statePath, s.state); err != nil {
-			return Entry{}, fmt.Errorf("record audit chain state: %w", err)
+	// Only ever forward. If entries were removed and the log is being appended to
+	// again, the recorded anchor is the evidence and must not be overwritten.
+	// Written after the entry, so an interrupted write leaves the anchor one
+	// behind rather than accusing a healthy log; NewStore adopts that case.
+	if a := s.chain.Anchor(); a.Count > s.anchor.Count {
+		s.anchor = a
+		if err := s.saveAnchor(); err != nil {
+			return Entry{}, fmt.Errorf("record audit chain anchor: %w", err)
 		}
 	}
 
@@ -314,15 +452,15 @@ func (s *Store) List(limit int) ([]Entry, error) {
 	return entries, nil
 }
 
-// VerifyIntegrity walks the entire audit chain and checks each hash.
+// VerifyIntegrity walks the entire audit chain and checks it against the anchor.
 func (s *Store) VerifyIntegrity() (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	file, err := os.Open(s.filePath)
 	if os.IsNotExist(err) {
-		if s.state.Count > 0 {
-			return false, fmt.Errorf("audit log is missing, but %d entries were recorded", s.state.Count)
+		if s.anchor.Count > 0 {
+			return false, fmt.Errorf("audit log is missing, but %d entries were recorded", s.anchor.Count)
 		}
 		return true, nil
 	}
@@ -332,46 +470,40 @@ func (s *Store) VerifyIntegrity() (bool, error) {
 	defer file.Close()
 
 	dec := json.NewDecoder(file)
-	expectedPrev := genesisHash
-	var expectedIndex int64 = 0
-	tailHash := ""
-
-	for {
-		var e Entry
-		if err := dec.Decode(&e); err != nil {
-			break
+	err = auditchain.VerifyStream(s.key, func(yield func(auditchain.Record, error) bool) {
+		for {
+			var e Entry
+			if derr := dec.Decode(&e); derr != nil {
+				return
+			}
+			if !yield(recordOf(e), nil) {
+				return
+			}
 		}
-
-		if e.Index != expectedIndex {
-			return false, fmt.Errorf("audit chain index mismatch at index %d (expected %d)", e.Index, expectedIndex)
-		}
-		if e.PrevHash != expectedPrev {
-			return false, fmt.Errorf("audit chain broken at index %d: prevHash mismatch", e.Index)
-		}
-		if e.V == 0 && e.Index >= s.state.Anchor {
-			return false, fmt.Errorf("audit entry %d is unkeyed but the chain has been keyed since index %d", e.Index, s.state.Anchor)
-		}
-
-		calcHash := s.chainHash(e)
-		if calcHash != e.Hash {
-			return false, fmt.Errorf("audit entry %d hash modified: got %s, calculated %s", e.Index, e.Hash, calcHash)
-		}
-
-		if e.Index == s.state.Count-1 {
-			tailHash = e.Hash
-		}
-		expectedPrev = e.Hash
-		expectedIndex++
+	}, s.anchor)
+	if err != nil {
+		return false, err
 	}
-
-	// A truncated log still chains correctly, so the tail is checked against the
-	// state record the log's writer cannot reach. A log missing entries never
-	// reaches the recorded index and fails here with tailHash empty. A log with
-	// more entries than the mark is fine: an interrupted write can leave the mark
-	// one behind, and the entries past it are still required to be keyed.
-	if s.state.Count > 0 && tailHash != s.state.Hash {
-		return false, fmt.Errorf("audit chain does not match the recorded state: entry %d is missing or altered", s.state.Count-1)
-	}
-
 	return true, nil
+}
+
+// ExportChain writes the log as shared-package records, and returns the anchor to
+// check them against. This is the form kyauditverify reads: the products store
+// different fields, so the records as the chain sees them are the only thing one
+// verifier can consume from all of them.
+func (s *Store) ExportChain(w io.Writer) (auditchain.Anchor, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	entries, err := s.readAll()
+	if err != nil {
+		return auditchain.Anchor{}, err
+	}
+	enc := json.NewEncoder(w)
+	for _, e := range entries {
+		if err := enc.Encode(recordOf(e)); err != nil {
+			return auditchain.Anchor{}, err
+		}
+	}
+	return s.anchor, nil
 }
