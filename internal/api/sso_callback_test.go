@@ -84,10 +84,12 @@ func TestSSOCallbackDoesNotLinkByUsername(t *testing.T) {
 	// account must not inherit that account or its vault. Username collision is not
 	// identity; only the OIDC sub is.
 	t.Run("unlinked local account", func(t *testing.T) {
-		srv := newTestServer(t)
-		alice, err := srv.users.Create("alice", "alice-password-123", users.RoleUser)
+		// A legacy account carried over from before KySignOn was the directory. Nothing
+		// in the current code can create one, so it is seeded on disk.
+		srv := newTestServerWithUsers(t, `[{"id":"u1","username":"alice","role":"user","active":true}]`)
+		alice, err := srv.users.Get("u1")
 		if err != nil {
-			t.Fatalf("Create: %v", err)
+			t.Fatalf("Get: %v", err)
 		}
 
 		idp := mockIdP(t, map[string]any{

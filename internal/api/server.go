@@ -94,10 +94,9 @@ func NewServer(cfg Config) (*Server, error) {
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 
-	// Public Auth & Setup
-	mux.HandleFunc("POST /api/auth/login", s.handleLogin)
-	mux.HandleFunc("POST /api/auth/recovery", s.handlePaperRecovery)
-	mux.HandleFunc("GET /api/auth/login-params", s.handleLoginParams)
+	// Public auth. KySignOn is the only way in: there is no local login, no login
+	// parameters to fetch, no recovery-as-site-access and no first-run setup. Paper
+	// recovery still works, client-side, against the vault key envelope.
 	mux.HandleFunc("GET /api/auth/sso-config", s.handleSSOConfig)
 	mux.HandleFunc("GET /api/auth/oidc/login", s.handleSSOLogin)
 	mux.HandleFunc("GET /auth/oidc/login", s.handleSSOLogin)
@@ -106,15 +105,12 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /auth/oidc/callback", s.handleSSOCallback)
 	mux.HandleFunc("GET /auth/sso/callback", s.handleSSOCallback)
 	mux.HandleFunc("GET /api/health", s.handleHealth)
-	mux.HandleFunc("GET /api/setup", s.handleSetupCheck)
-	mux.HandleFunc("POST /api/setup", s.handleSetupInit)
 
-	// Self & Session
+	// Self & Session. Changing the master password is a client-side re-wrap of the vault
+	// key envelope against PUT /api/vault/envelopes; the server has no password to change.
+	// Unlinking SSO is gone too — it would only be a way to lock yourself out for good.
 	mux.HandleFunc("GET /api/auth/me", s.withAuth(s.handleMe))
 	mux.HandleFunc("POST /api/auth/logout", s.withAuth(s.handleLogout))
-	mux.HandleFunc("POST /api/auth/password", s.withAuth(s.handleChangePassword))
-	mux.HandleFunc("POST /api/auth/paper-recovery", s.withAuth(s.handleSetPaperRecovery))
-	mux.HandleFunc("POST /api/settings/sso/unlink", s.withAuth(s.handleSSOUnlink))
 
 	// Vault Operations
 	mux.HandleFunc("GET /api/vault/metadata", s.withAuth(s.handleVaultMetadata))
@@ -137,7 +133,6 @@ func (s *Server) Routes() http.Handler {
 
 	// Admin Operations
 	mux.HandleFunc("GET /api/admin/users", s.withAdmin(s.handleAdminUsersList))
-	mux.HandleFunc("POST /api/admin/users", s.withAdmin(s.handleAdminUsersCreate))
 	mux.HandleFunc("PUT /api/admin/users/{id}/role", s.withAdmin(s.handleAdminUserRole))
 	mux.HandleFunc("POST /api/admin/users/{id}/deactivate", s.withAdmin(s.handleAdminUserDeactivate))
 	mux.HandleFunc("POST /api/admin/users/{id}/reactivate", s.withAdmin(s.handleAdminUserReactivate))

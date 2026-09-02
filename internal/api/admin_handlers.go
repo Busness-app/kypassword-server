@@ -18,30 +18,9 @@ func (s *Server) handleAdminUsersList(w http.ResponseWriter, r *http.Request, ad
 	writeJSON(w, http.StatusOK, res)
 }
 
-func (s *Server) handleAdminUsersCreate(w http.ResponseWriter, r *http.Request, admin users.User) {
-	var req struct {
-		Username string     `json:"username"`
-		Password string     `json:"password"`
-		Role     users.Role `json:"role"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Username == "" || req.Password == "" {
-		http.Error(w, "invalid user payload", http.StatusBadRequest)
-		return
-	}
-
-	if req.Role == "" {
-		req.Role = users.RoleUser
-	}
-
-	u, err := s.users.Create(req.Username, req.Password, req.Role)
-	if err != nil {
-		http.Error(w, "failed to create user: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	_, _ = s.audit.Log("admin.user_created", admin.ID, "", clientIP(r), "created user "+u.Username)
-	writeJSON(w, http.StatusOK, u.Public())
-}
+// Accounts are not created here. They arrive from KySignOn, by replication or by first
+// sign-in, and are keyed on the OIDC subject. Role, deactivate and reactivate remain as
+// local overrides.
 
 func (s *Server) handleAdminUserRole(w http.ResponseWriter, r *http.Request, admin users.User) {
 	id := r.PathValue("id")

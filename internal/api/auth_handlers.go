@@ -2,9 +2,7 @@ package api
 
 import (
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -18,100 +16,10 @@ import (
 
 const ssoCookieName = "kypass_sso_state"
 
-type LoginRequest struct {
-	Username   string `json:"username"`
-	Password   string `json:"password"`
-	AuthSecret string `json:"authSecret"`
-}
-
-func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	var req LoginRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
-		return
-	}
-
-	var u users.User
-	var err error
-
-	if req.AuthSecret != "" {
-		u, err = s.users.VerifyAuth(req.Username, req.AuthSecret)
-	}
-	if (err != nil || req.AuthSecret == "") && req.Password != "" {
-		u, err = s.users.VerifyAuth(req.Username, req.Password)
-	}
-
-	if err != nil {
-		_, _ = s.audit.Log("auth.login_failed", "", "", clientIP(r), "failed login for "+req.Username)
-		http.Error(w, "invalid credentials", http.StatusUnauthorized)
-		return
-	}
-
-	if err := s.startSession(w, r, u.ID); err != nil {
-		http.Error(w, "failed to start session", http.StatusInternalServerError)
-		return
-	}
-
-	_, _ = s.audit.Log("auth.login", u.ID, "", clientIP(r), "user signed in")
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":   true,
-		"user": u.Public(),
-	})
-}
-
-func (s *Server) handlePaperRecovery(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Username       string `json:"username"`
-		RecoverySecret string `json:"recoverySecret"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request", http.StatusBadRequest)
-		return
-	}
-
-	u, err := s.users.VerifyPaperRecovery(req.Username, req.RecoverySecret)
-	if err != nil {
-		_, _ = s.audit.Log("auth.recovery_failed", "", "", clientIP(r), "failed paper recovery for "+req.Username)
-		http.Error(w, "invalid recovery code", http.StatusUnauthorized)
-		return
-	}
-
-	if err := s.startSession(w, r, u.ID); err != nil {
-		http.Error(w, "failed to start session", http.StatusInternalServerError)
-		return
-	}
-
-	_, _ = s.audit.Log("auth.recovery_success", u.ID, "", clientIP(r), "unlocked via paper recovery code")
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":                 true,
-		"mustChangePassword": true,
-		"user":               u.Public(),
-	})
-}
-
-func (s *Server) handleLoginParams(w http.ResponseWriter, r *http.Request) {
-	username := r.URL.Query().Get("username")
-	if username == "" {
-		http.Error(w, "missing username", http.StatusBadRequest)
-		return
-	}
-
-	u, err := s.users.GetByUsername(username)
-	if err == nil {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"salt":       u.AuthSalt,
-			"iterations": u.AuthIterations,
-		})
-		return
-	}
-
-	// Account not found: return deterministic synthetic salt so response timing/shape does not leak existence
-	h := sha256.Sum256([]byte("kypass-synth:" + strings.ToLower(username)))
-	writeJSON(w, http.StatusOK, map[string]any{
-		"salt":       hex.EncodeToString(h[:16]),
-		"iterations": 600000,
-	})
-}
+// There is no local authentication here, by design. KySignOn is the only authenticator:
+// no login endpoint, no login parameters, no recovery-as-site-access, no first-run setup.
+// The master password is never sent, not even as a derived verifier — it unwraps the
+// vault key envelope in the browser and nowhere else.
 
 func (s *Server) handleSSOConfig(w http.ResponseWriter, r *http.Request) {
 	settings := s.ssoStore.Load()
@@ -329,15 +237,6 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 
-func (s *Server) handleSSOUnlink(w http.ResponseWriter, r *http.Request, u users.User) {
-	if err := s.users.UnlinkSSO(u.ID); err != nil {
-		http.Error(w, "failed to unlink SSO: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	_, _ = s.audit.Log("auth.sso_unlinked", u.ID, "", clientIP(r), "unlinked SSO identity")
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-}
-
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request, u users.User) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"authenticated": true,
@@ -366,85 +265,10 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request, u users.Us
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request, u users.User) {
-	var req struct {
-		NewPassword   string `json:"newPassword"`
-		RequireChange bool   `json:"requireChange"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.NewPassword == "" {
-		http.Error(w, "invalid password payload", http.StatusBadRequest)
-		return
-	}
-
-	if err := s.users.SetPassword(u.ID, req.NewPassword, req.RequireChange); err != nil {
-		http.Error(w, "failed to update password: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	_, _ = s.audit.Log("auth.password_changed", u.ID, "", clientIP(r), "user changed password")
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-}
-
-func (s *Server) handleSetPaperRecovery(w http.ResponseWriter, r *http.Request, u users.User) {
-	var req struct {
-		RecoverySecret string `json:"recoverySecret"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.RecoverySecret == "" {
-		http.Error(w, "invalid recovery payload", http.StatusBadRequest)
-		return
-	}
-
-	if err := s.users.SetPaperRecovery(u.ID, req.RecoverySecret); err != nil {
-		http.Error(w, "failed to save recovery secret: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	_, _ = s.audit.Log("auth.paper_recovery_set", u.ID, "", clientIP(r), "paper recovery code updated")
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-}
-
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":  "ok",
 		"service": "kypassword-server",
 		"time":    time.Now().UTC().Format(time.RFC3339),
-	})
-}
-
-func (s *Server) handleSetupCheck(w http.ResponseWriter, r *http.Request) {
-	userList := s.users.List()
-	writeJSON(w, http.StatusOK, map[string]any{
-		"setupRequired": len(userList) == 0,
-	})
-}
-
-func (s *Server) handleSetupInit(w http.ResponseWriter, r *http.Request) {
-	userList := s.users.List()
-	if len(userList) > 0 {
-		http.Error(w, "setup has already been completed", http.StatusForbidden)
-		return
-	}
-
-	var req struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Username == "" || req.Password == "" {
-		http.Error(w, "username and password required", http.StatusBadRequest)
-		return
-	}
-
-	u, err := s.users.Create(req.Username, req.Password, users.RoleAdmin)
-	if err != nil {
-		http.Error(w, "failed to create initial admin: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	_ = s.startSession(w, r, u.ID)
-	_, _ = s.audit.Log("setup.initialized", u.ID, "", clientIP(r), "initial admin account created")
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":   true,
-		"user": u.Public(),
 	})
 }

@@ -1,0 +1,104 @@
+package api
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"kypassword-server/internal/users"
+)
+
+func TestRetiredAuthEndpointsAreGone(t *testing.T) {
+	// Every path below was a way to authenticate, change a credential, or provision an
+	// account without KySignOn. Each must now 404 — not 401, not 405. A 401 would mean
+	// the route still exists behind auth, and the point is that it exists nowhere.
+	srv := newTestServer(t)
+	handler := srv.Routes()
+
+	for _, tc := range []struct{ method, path string }{
+		{http.MethodPost, "/api/auth/login"},
+		{http.MethodGet, "/api/auth/login-params?username=alice"},
+		{http.MethodPost, "/api/auth/recovery"},
+		{http.MethodPost, "/api/auth/password"},
+		{http.MethodPost, "/api/auth/paper-recovery"},
+		{http.MethodPost, "/api/settings/sso/unlink"},
+		{http.MethodGet, "/api/setup"},
+		{http.MethodPost, "/api/setup"},
+	} {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(tc.method, tc.path, nil))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("%s %s = %d, want 404", tc.method, tc.path, rec.Code)
+		}
+	}
+}
+
+func TestAdminCannotCreateAccounts(t *testing.T) {
+	// POST /api/admin/users cannot 404: GET on that path is still registered, so
+	// net/http's mux answers 405 for the method it does not have. That is the honest
+	// answer, but it is weaker evidence than a 404 — so this drives it as a real admin
+	// with a real payload and checks that no account appears.
+	srv := newTestServer(t)
+	_, cookie := signedInUser(t, srv, "admin", users.RoleAdmin)
+	before := len(srv.users.List())
+
+	body := strings.NewReader(`{"username":"smuggled","password":"hunter2","role":"admin"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/users", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(cookie)
+
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("POST /api/admin/users = %d, want 405", rec.Code)
+	}
+	if _, err := srv.users.GetByUsername("smuggled"); err == nil {
+		t.Error("an account was created through a retired endpoint")
+	}
+	if after := len(srv.users.List()); after != before {
+		t.Errorf("account count went from %d to %d", before, after)
+	}
+}
+
+func TestSurvivingRoutesStillExist(t *testing.T) {
+	// The deletion must not take the remaining surface with it. These answer without a
+	// session, so an unauthenticated request proves the route is registered.
+	srv := newTestServer(t)
+	handler := srv.Routes()
+
+	for _, tc := range []struct{ method, path string }{
+		{http.MethodGet, "/api/health"},
+		{http.MethodGet, "/api/auth/sso-config"},
+		{http.MethodGet, "/api/auth/oidc/login"},
+		{http.MethodGet, "/api/auth/oidc/callback"},
+		{http.MethodGet, "/auth/sso/login"},
+		{http.MethodGet, "/auth/sso/callback"},
+		{http.MethodPost, "/api/sync/webhook"},
+		{http.MethodPost, "/api/devices/pairing/redeem"},
+	} {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(tc.method, tc.path, nil))
+		if rec.Code == http.StatusNotFound {
+			t.Errorf("%s %s = 404; the route was removed by mistake", tc.method, tc.path)
+		}
+	}
+
+	// Authenticated routes should answer 401, which likewise proves they are registered.
+	for _, tc := range []struct{ method, path string }{
+		{http.MethodGet, "/api/auth/me"},
+		{http.MethodPost, "/api/auth/logout"},
+		{http.MethodGet, "/api/vault/metadata"},
+		{http.MethodGet, "/api/vault/kdbx"},
+		{http.MethodPut, "/api/vault/envelopes"},
+		{http.MethodGet, "/api/devices"},
+		{http.MethodGet, "/api/admin/users"},
+		{http.MethodGet, "/api/admin/sso"},
+	} {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(tc.method, tc.path, nil))
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("%s %s = %d, want 401", tc.method, tc.path, rec.Code)
+		}
+	}
+}
