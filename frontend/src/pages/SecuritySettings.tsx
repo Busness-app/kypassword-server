@@ -1,6 +1,6 @@
 import React, { useState, useEffect, FormEvent } from "react";
-import { getJSON, postJSON, putJSON, deleteJSON, toErrorMessage } from "../lib/api";
-import { wrapVaultKey, deriveAuthSecret } from "../lib/vaultCrypto";
+import { getJSON, putJSON, deleteJSON, toErrorMessage } from "../lib/api";
+import { wrapVaultKey } from "../lib/vaultCrypto";
 import { KeyRound, Shield, FileText, Smartphone, Trash2, CheckCircle2, QrCode } from "lucide-react";
 import { DevicePairingModal } from "../components/DevicePairingModal";
 
@@ -20,7 +20,6 @@ type Props = {
 };
 
 export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice }: Props) {
-  const [oldPassword, setOldPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [devices, setDevices] = useState<Device[]>([]);
@@ -57,22 +56,16 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
     setError("");
 
     try {
-      // 1. Update password on server
-      await postJSON("/api/auth/password", {
-        newPassword,
-        requireChange: false,
-      });
-
-      // 2. Re-wrap vault master key under new password
+      // Changing the master password is entirely a re-wrap of the vault key envelope.
+      // There is no password on the server to update: it never had one, and the new
+      // password is not sent anywhere — only the envelope it encrypts is.
       const newEnvelope = await wrapVaultKey(vaultKey, newPassword);
 
-      // 3. Save new password envelope
       await putJSON("/api/vault/envelopes", {
         passwordEnvelope: newEnvelope,
       });
 
       setMessage("Master password changed and vault key re-wrapped successfully.");
-      setOldPassword("");
       setNewPassword("");
       setConfirmPassword("");
       onUserUpdated();
@@ -100,37 +93,19 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
       }
       const code = `KYPASS-${raw.slice(0, 4)}-${raw.slice(4, 8)}-${raw.slice(8, 12)}-${raw.slice(12, 16)}`;
 
-      // 1. Wrap vault key under recovery code
+      // The recovery code wraps the vault key and nothing else. It used to also be hashed
+      // onto the user record so it could start a session; that made it a second way to
+      // authenticate, which SSO-only does not allow. It unlocks the vault, not the site.
       const recoveryEnv = await wrapVaultKey(vaultKey, code);
 
-      // 2. Save recovery envelope on vault
       await putJSON("/api/vault/envelopes", {
         recoveryEnvelope: recoveryEnv,
-      });
-
-      // 3. Save recovery secret hash on user
-      await postJSON("/api/auth/paper-recovery", {
-        recoverySecret: code,
       });
 
       setPaperCode(code);
       setMessage("Paper recovery backup generated. Print or write this down.");
     } catch (err) {
       setError(toErrorMessage(err, "Failed to generate paper recovery code"));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleUnlinkSSO = async () => {
-    if (!confirm("Are you sure you want to unlink your SSO account?")) return;
-    setBusy(true);
-    try {
-      await postJSON("/api/settings/sso/unlink", {});
-      setMessage("SSO identity unlinked.");
-      onUserUpdated();
-    } catch (err) {
-      setError(toErrorMessage(err, "Failed to unlink SSO"));
     } finally {
       setBusy(false);
     }
@@ -196,7 +171,10 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
           <h3 style={{ margin: 0 }}>Change Master Password</h3>
         </div>
         <p style={{ color: "var(--ink-muted)", fontSize: "0.85rem", marginBottom: "1.25rem" }}>
-          Changing your password re-wraps your vault key envelope client-side. It does not require re-encrypting the entire KDBX vault.
+          Your master password is not a login credential — KySignOn handles signing in. It is the
+          secret that decrypts your vault key, here in the browser. Changing it re-wraps that key
+          envelope client-side; the password itself is never sent, and the KDBX vault is not
+          re-encrypted.
         </p>
 
         <form onSubmit={handleChangePassword}>
@@ -269,40 +247,26 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
             <h3 style={{ margin: 0 }}>Single Sign-On (KySignOn / OIDC)</h3>
           </div>
 
-          {user.ssoSub ? (
-            <div>
-              <p style={{ color: "var(--ink-muted)", fontSize: "0.85rem", marginBottom: "1rem" }}>
-                Your vault is linked to your central SSO identity.
-              </p>
-              <div
-                style={{
-                  background: "var(--accent-soft)",
-                  border: "1px solid rgba(77, 238, 234, 0.3)",
-                  borderRadius: "6px",
-                  padding: "0.75rem 1rem",
-                  marginBottom: "1rem",
-                }}
-              >
-                <strong style={{ color: "var(--accent)" }}>SSO Identity Linked</strong>
-                <div style={{ fontSize: "0.85rem", color: "var(--ink-muted)", marginTop: "0.25rem" }}>
-                  Username: <code>{user.ssoUsername || "Unknown"}</code> {user.ssoEmail ? `(${user.ssoEmail})` : ""}<br />
-                  Subject: <code>{user.ssoSub}</code>
-                </div>
-              </div>
-              <button className="btn btn-danger btn-sm" onClick={handleUnlinkSSO} disabled={busy}>
-                Unlink SSO Account
-              </button>
+          <p style={{ color: "var(--ink-muted)", fontSize: "0.85rem", marginBottom: "1rem" }}>
+            KySignOn is your only way in to KyPasswords, so this identity cannot be unlinked —
+            doing so would lock you out for good. Accounts are managed in KySignOn.
+          </p>
+          <div
+            style={{
+              background: "var(--accent-soft)",
+              border: "1px solid rgba(77, 238, 234, 0.3)",
+              borderRadius: "6px",
+              padding: "0.75rem 1rem",
+            }}
+          >
+            <strong style={{ color: "var(--accent)" }}>KySignOn Identity</strong>
+            <div style={{ fontSize: "0.85rem", color: "var(--ink-muted)", marginTop: "0.25rem" }}>
+              Username: <code>{user.ssoUsername || user.username}</code>{" "}
+              {user.ssoEmail ? `(${user.ssoEmail})` : ""}
+              <br />
+              Subject: <code>{user.ssoSub || "—"}</code>
             </div>
-          ) : (
-            <div>
-              <p style={{ color: "var(--ink-muted)", fontSize: "0.85rem", marginBottom: "1rem" }}>
-                Connect your KySignOn account for 1-click single sign-on.
-              </p>
-              <a href="/api/auth/oidc/login?link=true" className="btn btn-primary">
-                Link KySignOn Identity
-              </a>
-            </div>
-          )}
+          </div>
         </section>
       ) : null}
 
