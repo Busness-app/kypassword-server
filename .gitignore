@@ -24,3 +24,6 @@ frontend/dist/
 .vscode/
 .idea/
 *.tmp
+
+# Agent worktrees
+.claude/worktrees/
