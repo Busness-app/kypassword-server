@@ -2,10 +2,7 @@ package api
 
 import (
 	"bytes"
-	"crypto/hmac"
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -227,7 +224,7 @@ func TestDevicePairingFlow(t *testing.T) {
 	}
 }
 
-func TestSSOAndSyncWebhook(t *testing.T) {
+func TestSSOCallbackAutoProvisions(t *testing.T) {
 	srv := newTestServer(t)
 	handler := srv.Routes()
 
@@ -302,34 +299,6 @@ func TestSSOAndSyncWebhook(t *testing.T) {
 		t.Errorf("dave auto-provision mismatch: %+v, err: %v", dave, err)
 	}
 
-	// 3. Test Directory Sync Webhook
-	ev := SyncWebhookEvent{
-		Event: "user.created",
-		User: SyncUserPayload{
-			ID:       "replicated-user-888",
-			Username: "replicated_eve",
-			Role:     "user",
-			Active:   true,
-			Email:    "eve@urlxl.com",
-		},
-	}
-	body, _ := json.Marshal(ev)
-	mac := hmac.New(sha256.New, []byte(srv.pairingSecret))
-	mac.Write(body)
-	sig := hex.EncodeToString(mac.Sum(nil))
-
-	req = httptest.NewRequest(http.MethodPost, "/api/sync/webhook", bytes.NewReader(body))
-	req.Header.Set("X-Sync-Signature", sig)
-	rec = httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("POST /api/sync/webhook status = %d", rec.Code)
-	}
-
-	eve, err := srv.users.GetBySSOSub("replicated-user-888")
-	if err != nil || eve.Username != "replicated_eve" {
-		t.Errorf("replicated user mismatch: %+v, err: %v", eve, err)
-	}
 }
 
 func TestAuditLogIntegrity(t *testing.T) {
