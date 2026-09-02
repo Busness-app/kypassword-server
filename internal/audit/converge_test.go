@@ -1,0 +1,44 @@
+package audit
+
+import (
+	"testing"
+
+	"github.com/Busness-app/ky-primitives/auditchain"
+)
+
+// chainOf reads the log back, oldest first, as shared-package records.
+func chainOf(t *testing.T, s *Store) []auditchain.Record {
+	t.Helper()
+	entries, err := s.List(0)
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	recs := make([]auditchain.Record, 0, len(entries))
+	for i := len(entries) - 1; i >= 0; i-- {
+		recs = append(recs, recordOf(entries[i]))
+	}
+	return recs
+}
+
+// The point of converging: an entry this server writes must verify under the
+// shared package, with no KyPassword-specific hashing involved.
+func TestEntriesVerifyUnderSharedPackage(t *testing.T) {
+	dir, keyDir := t.TempDir(), t.TempDir()
+	store, err := NewStore(dir, keyDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	for _, action := range []string{"auth.login", "vault.upload", "vault.download"} {
+		if _, err := store.Log(action, "user1", "dev1", "127.0.0.1", action); err != nil {
+			t.Fatalf("Log failed: %v", err)
+		}
+	}
+
+	key, err := loadKey(keyDir)
+	if err != nil {
+		t.Fatalf("loadKey failed: %v", err)
+	}
+	if err := auditchain.Verify(key, chainOf(t, store), store.anchor); err != nil {
+		t.Fatalf("chain does not verify under the shared package: %v", err)
+	}
+}

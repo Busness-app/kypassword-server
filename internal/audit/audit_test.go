@@ -55,15 +55,7 @@ func TestAuditLogAndVerify(t *testing.T) {
 	tamperedData := []byte(string(data) + "\n{\"index\":99,\"hash\":\"fake\"}\n")
 	_ = os.WriteFile(auditFile, tamperedData, 0600)
 
-	store2, err := NewStore(dir, keyDir)
-	if err != nil {
-		t.Fatalf("NewStore 2 failed: %v", err)
-	}
-
-	ok, err = store2.VerifyIntegrity()
-	if ok || err == nil {
-		t.Fatalf("expected tampering detection, but got ok=%v, err=%v", ok, err)
-	}
+	assertTamperDetected(t, dir, keyDir, "appended junk entry")
 }
 
 // An attacker who can write the audit file rewrites a record and recomputes
@@ -104,7 +96,6 @@ func TestForgedChainIsRejected(t *testing.T) {
 	prev := entries[0].Hash
 	for i := 1; i < len(entries); i++ {
 		entries[i].PrevHash = prev
-		entries[i].V = 0
 		entries[i].Hash = legacyHash(entries[i])
 		prev = entries[i].Hash
 	}
@@ -120,18 +111,27 @@ func TestForgedChainIsRejected(t *testing.T) {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
 
-	store2, err := NewStore(dir, keyDir)
-	if err != nil {
-		t.Fatalf("NewStore 2 failed: %v", err)
-	}
-	ok, err := store2.VerifyIntegrity()
-	if ok || err == nil {
-		t.Fatalf("forged chain accepted: ok=%v, err=%v", ok, err)
-	}
+	assertTamperDetected(t, dir, keyDir, "forged chain")
 }
 
 // legacyHash is the unkeyed digest the pre-HMAC chain used, and the only one an
 // attacker without the key can compute.
+// assertTamperDetected fails only if a tampered log both opens and verifies.
+// Opening is the earlier of the two: the shared package refuses to resume a chain
+// whose tail does not carry its own digest, so a forged log is usually rejected
+// before anything reaches VerifyIntegrity.
+func assertTamperDetected(t *testing.T, dir, keyDir, what string) {
+	t.Helper()
+	store, err := NewStore(dir, keyDir)
+	if err != nil {
+		return
+	}
+	ok, err := store.VerifyIntegrity()
+	if ok && err == nil {
+		t.Fatalf("%s accepted: ok=%v, err=%v", what, ok, err)
+	}
+}
+
 func legacyHash(e Entry) string {
 	raw := fmt.Sprintf("%d|%s|%s|%s|%s|%s|%s|%s",
 		e.Index, e.Timestamp.Format(time.RFC3339Nano), e.Action,
@@ -216,14 +216,16 @@ func TestLegacyChainVerifiesAndContinues(t *testing.T) {
 		t.Fatalf("mixed chain rejected: ok=%v, err=%v", ok, err)
 	}
 
-	// Migration must anchor the legacy tail with a keyed entry immediately,
-	// not wait for the next real event.
+	// Conversion rewrites the legacy entries in place: no marker entry, and the
+	// original events are all still there.
 	entries := readChain(t, dir)
-	if len(entries) != 5 {
-		t.Fatalf("got %d entries, want 3 legacy + rekey marker + 1 new", len(entries))
+	if len(entries) != 4 {
+		t.Fatalf("got %d entries, want 3 converted + 1 new", len(entries))
 	}
-	if entries[3].Action != "audit.rekey" || entries[3].V == 0 {
-		t.Fatalf("entry 3 = %+v, want a keyed audit.rekey marker", entries[3])
+	for i, e := range entries[:3] {
+		if e.Action != "legacy.event" {
+			t.Fatalf("entry %d = %q, want the original legacy event preserved", i, e.Action)
+		}
 	}
 
 	// Reopening must not append a second marker.
@@ -234,8 +236,8 @@ func TestLegacyChainVerifiesAndContinues(t *testing.T) {
 	if ok, err := store2.VerifyIntegrity(); !ok || err != nil {
 		t.Fatalf("reopened chain rejected: ok=%v, err=%v", ok, err)
 	}
-	if got := len(readChain(t, dir)); got != 5 {
-		t.Fatalf("reopen appended entries: got %d, want 5", got)
+	if got := len(readChain(t, dir)); got != 4 {
+		t.Fatalf("reopen appended entries: got %d, want 4", got)
 	}
 }
 
@@ -258,13 +260,7 @@ func TestForgedLegacyEntryIsRejected(t *testing.T) {
 	}
 	writeChain(t, dir, entries)
 
-	store, err := NewStore(dir, keyDir)
-	if err != nil {
-		t.Fatalf("NewStore 2 failed: %v", err)
-	}
-	if ok, err := store.VerifyIntegrity(); ok || err == nil {
-		t.Fatalf("forged legacy entry accepted: ok=%v, err=%v", ok, err)
-	}
+	assertTamperDetected(t, dir, keyDir, "forged legacy entry")
 }
 
 func TestDowngradedChainIsRejected(t *testing.T) {
@@ -284,7 +280,6 @@ func TestDowngradedChainIsRejected(t *testing.T) {
 	entries := readChain(t, dir)
 	prev := genesisHash
 	for i := range entries {
-		entries[i].V = 0
 		entries[i].Details = "forged"
 		entries[i].PrevHash = prev
 		entries[i].Hash = legacyHash(entries[i])
@@ -292,13 +287,7 @@ func TestDowngradedChainIsRejected(t *testing.T) {
 	}
 	writeChain(t, dir, entries)
 
-	store2, err := NewStore(dir, keyDir)
-	if err != nil {
-		t.Fatalf("NewStore 2 failed: %v", err)
-	}
-	if ok, err := store2.VerifyIntegrity(); ok || err == nil {
-		t.Fatalf("downgraded chain accepted: ok=%v, err=%v", ok, err)
-	}
+	assertTamperDetected(t, dir, keyDir, "downgraded chain")
 }
 
 func TestShortKeyFileIsRejected(t *testing.T) {
@@ -318,10 +307,9 @@ func TestTruncationToLegacyPrefixIsRejected(t *testing.T) {
 		t.Fatalf("NewStore failed: %v", err)
 	}
 
-	// Drop the keyed marker, rolling the log back to the unkeyed records the
-	// attacker can still forge.
+	// Roll the log back, dropping converted entries the anchor still counts.
 	entries := readChain(t, dir)
-	writeChain(t, dir, entries[:3])
+	writeChain(t, dir, entries[:2])
 
 	store, err := NewStore(dir, keyDir)
 	if err != nil {
