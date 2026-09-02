@@ -213,17 +213,21 @@ func NewStore(dir, keyDir string) (*Store, error) {
 		return nil, err
 	}
 
+	// Before the empty-log short circuit, not after it. readAll stops at the first
+	// line it cannot decode, so a log wiped to zero bytes — or one whose first line
+	// is corrupt — reads as no entries at all, and used to be the one truncation that
+	// opened cleanly and went on accepting appends.
+	anchor, err := s.placeTail(entries)
+	if err != nil {
+		return nil, err
+	}
+
 	if len(entries) == 0 {
 		s.chain, err = auditchain.New(key)
 		return s, err
 	}
 
-	last := entries[len(entries)-1]
-	anchor, err := s.placeTail(entries)
-	if err != nil {
-		return nil, err
-	}
-	if s.chain, err = auditchain.Resume(key, recordOf(last), anchor); err != nil {
+	if s.chain, err = auditchain.Resume(key, recordOf(entries[len(entries)-1]), anchor); err != nil {
 		return nil, err
 	}
 	if anchor != s.anchor {
@@ -235,33 +239,45 @@ func NewStore(dir, keyDir string) (*Store, error) {
 	return s, nil
 }
 
-// placeTail returns the anchor to resume the log against. Resume requires one that
-// names the last record as the tail, so every way the stored mark can disagree with
-// the log has to be settled here rather than after the call.
+// placeTail returns the anchor to resume the log against, and refuses outright when
+// the mark and the log cannot be reconciled at all.
+//
+// It does not settle everything. When the counts agree it hands back the stored mark
+// unexamined, and whether the last record is really the one that mark names is left
+// to Resume's own digest check — which is what rejects a forged or downgraded log
+// whose length happens to be right. TestEmptiedLogIsRejected and
+// TestForgedChainIsRejected are the two ends of that division.
 func (s *Store) placeTail(entries []Entry) (auditchain.Anchor, error) {
 	n := uint64(len(entries))
-	last := entries[len(entries)-1]
 
 	switch {
-	case s.anchor.Count == 0:
-		// A log with no mark cannot be placed. The mark is the only record of how
-		// long the log is meant to be, so without it a log with entries removed and
-		// one that is intact are the same file. Minting a mark here would bless
-		// whatever is on disk, and one append used to do exactly that.
-		return auditchain.Anchor{}, fmt.Errorf("%w: %s holds %d records but %s records none. "+
-			"The mark is missing, so a truncated log cannot be told from an intact one. "+
-			"Restore it from backup, or move both files aside to begin a new chain and keep "+
-			"the old pair for the auditor", auditchain.ErrBrokenChain, s.filePath, n, s.statePath)
-
 	case n < s.anchor.Count:
 		// Fewer records than the mark counted. Resuming at this tail would mint a
 		// sequence number that already exists: a fork that persists cleanly and can
 		// never verify again. Refuse to start rather than append over the evidence.
+		//
+		// n == 0 lands here too, and must: an emptied log is the most truncated log
+		// there is, not a fresh install.
 		return auditchain.Anchor{}, fmt.Errorf("%w: %s holds %d records but the mark in %s counts %d. "+
 			"Entries have been removed from the end of the log; appending would write over the gap, "+
 			"so this server will not start. Restore the log from backup, or move both files aside to "+
 			"begin a new chain and keep the old pair for the auditor",
 			auditchain.ErrTruncated, s.filePath, n, s.statePath, s.anchor.Count)
+
+	case n == 0:
+		// No log and no mark: a first run.
+		return auditchain.Anchor{}, nil
+
+	case s.anchor.Count == 0:
+		// A log with no mark cannot be placed. The mark is the only record of how
+		// long the log is meant to be, so without it a log with entries removed and
+		// one that is intact are the same file. Minting a mark here would bless
+		// whatever is on disk, and one append used to do exactly that.
+		return auditchain.Anchor{}, fmt.Errorf("%w: %s holds %d records but the mark in %s counts none. "+
+			"It was removed and recreated empty, or never written; either way a truncated log "+
+			"cannot be told from an intact one, so this server will not start. Restore the mark "+
+			"from backup, or move both files aside to begin a new chain and keep the old pair "+
+			"for the auditor", auditchain.ErrBrokenChain, s.filePath, n, s.statePath)
 
 	case n > s.anchor.Count:
 		// The mark is behind the log: records landed and the mark write that should
@@ -289,7 +305,7 @@ func (s *Store) placeTail(entries []Entry) (auditchain.Anchor, error) {
 			}
 			prev = rec.Hash
 		}
-		return auditchain.Anchor{Count: n, Hash: last.Hash}, nil
+		return auditchain.Anchor{Count: n, Hash: entries[n-1].Hash}, nil
 	}
 	return s.anchor, nil
 }
@@ -328,8 +344,9 @@ func (s *Store) saveAnchor() error {
 // Every entry must first verify under the digest that wrote it, so a log that was
 // already broken is never blessed, and the mark must not already count more entries
 // than the log holds: converting then would save a fresh mark over the evidence of
-// a truncation. When conversion is refused the log is left exactly as it is, and
-// NewStore reports it by refusing to place the tail.
+// a truncation. When conversion is refused the log is left exactly as it is: if the
+// mark counts more than the log holds placeTail refuses, and otherwise the entries
+// are still in the old format, so Resume's digest check is what rejects them.
 func (s *Store) converge(entries []Entry, st chainState) ([]Entry, error) {
 	if len(entries) == 0 {
 		return entries, nil

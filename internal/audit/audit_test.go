@@ -8,8 +8,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -415,25 +418,53 @@ func TestTruncatedKeyedChainIsRejected(t *testing.T) {
 	}
 }
 
-func TestDeletedLogIsRejected(t *testing.T) {
+// Deleting the log, wiping it to zero bytes and corrupting its first line are one
+// attack with one effect: readAll returns no entries and the mark still counts some.
+// All three get the same answer, and it is the same one a log missing its last record
+// gets — refuse to start. Opening instead meant every record written during that
+// uptime landed in a chain that could never verify, with no signal at boot.
+func TestEmptiedLogIsRejected(t *testing.T) {
+	for name, wipe := range map[string]func(*testing.T, string){
+		"deleted": func(t *testing.T, path string) {
+			if err := os.Remove(path); err != nil {
+				t.Fatalf("Remove failed: %v", err)
+			}
+		},
+		"truncated to zero bytes": func(t *testing.T, path string) {
+			if err := os.WriteFile(path, nil, 0600); err != nil {
+				t.Fatalf("WriteFile failed: %v", err)
+			}
+		},
+		"first line corrupt": func(t *testing.T, path string) {
+			if err := os.WriteFile(path, []byte("not json at all\n"), 0600); err != nil {
+				t.Fatalf("WriteFile failed: %v", err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir, keyDir := t.TempDir(), t.TempDir()
+			loggedStore(t, dir, keyDir, 3)
+			wipe(t, filepath.Join(dir, "audit.jsonl"))
+
+			if _, err := NewStore(dir, keyDir); !errors.Is(err, auditchain.ErrTruncated) {
+				t.Fatalf("NewStore err = %v, want ErrTruncated", err)
+			}
+		})
+	}
+}
+
+// The counterpart: no log and no mark is a first run, not a truncation.
+func TestFirstRunOpensCleanly(t *testing.T) {
 	dir, keyDir := t.TempDir(), t.TempDir()
 	store, err := NewStore(dir, keyDir)
 	if err != nil {
 		t.Fatalf("NewStore failed: %v", err)
 	}
-	if _, err := store.Log(t.Context(), "auth.login", "user1", "dev1", "127.0.0.1", "login"); err != nil {
+	if _, err := store.Log(t.Context(), "auth.login", "user1", "", "127.0.0.1", "first"); err != nil {
 		t.Fatalf("Log failed: %v", err)
 	}
-	if err := os.Remove(filepath.Join(dir, "audit.jsonl")); err != nil {
-		t.Fatalf("Remove failed: %v", err)
-	}
-
-	store2, err := NewStore(dir, keyDir)
-	if err != nil {
-		t.Fatalf("NewStore 2 failed: %v", err)
-	}
-	if ok, err := store2.VerifyIntegrity(); ok || err == nil {
-		t.Fatalf("deleted log accepted: ok=%v, err=%v", ok, err)
+	if ok, err := store.VerifyIntegrity(); !ok || err != nil {
+		t.Fatalf("first-run chain does not verify: ok=%v, err=%v", ok, err)
 	}
 }
 
@@ -633,5 +664,109 @@ func TestQueuedLogSpendsItsBudgetOnTheChain(t *testing.T) {
 	}
 	if got := len(readChain(t, dir)); got != 1 {
 		t.Fatalf("got %d entries, want the queued record", got)
+	}
+}
+
+// Resume verifies only the last record, and the predecessor walk only checks that the
+// links join up. Content altered past the mark without touching any digest passes
+// both: only VerifyRecord on every record in the run catches it. Deleting that call
+// from placeTail must fail this test.
+func TestTamperedRecordPastTheMarkIsRefused(t *testing.T) {
+	dir, keyDir := t.TempDir(), t.TempDir()
+	loggedStore(t, dir, keyDir, 4)
+
+	entries := readChain(t, dir)
+	writeMark(t, keyDir, chainState{Count: 1, Hash: entries[0].Hash})
+
+	// An intermediate record past the mark, rewritten in place. Its own hash and its
+	// link to either neighbour are left exactly as they were, and the last record --
+	// the only one Resume looks at -- is untouched.
+	entries[2].Details = "nothing to see here"
+	writeChain(t, dir, entries)
+
+	if _, err := NewStore(dir, keyDir); err == nil {
+		t.Fatal("NewStore adopted a run holding a record that no longer carries its own digest")
+	}
+}
+
+// appendTimeout is a real bound only because acquire never contends: Log holds s.mu
+// across the whole Append, and s.chain is used from exactly one place in the package.
+// A second call site would put a waiter behind a hung store with no way to shed, and
+// the deadline would start firing on a queue instead of on a fault.
+func TestChainIsDrivenFromOneCallSite(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatalf("Glob failed: %v", err)
+	}
+	var sites []string
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		data, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatalf("ReadFile %s: %v", f, err)
+		}
+		for i, line := range strings.Split(string(data), "\n") {
+			if strings.Contains(line, ".chain.") {
+				sites = append(sites, fmt.Sprintf("%s:%d", f, i+1))
+			}
+		}
+	}
+	if len(sites) != 1 {
+		t.Fatalf("the chain is driven from %d places %v; appendTimeout is only a bound while there is one", len(sites), sites)
+	}
+}
+
+// A comment naming a test it is not backed by is worse than no comment: it reads as
+// evidence. Every Test... identifier mentioned in this package's non-test source must
+// name a test that exists somewhere in the repository.
+func TestCommentsNameRealTests(t *testing.T) {
+	defined := map[string]bool{}
+	var cited []string
+	name := regexp.MustCompile(`\bTest[A-Z]\w*`)
+
+	err := filepath.WalkDir("../..", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for _, m := range regexp.MustCompile(`func (Test[A-Z]\w*)\(`).FindAllStringSubmatch(string(data), -1) {
+			defined[m[1]] = true
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WalkDir failed: %v", err)
+	}
+
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatalf("Glob failed: %v", err)
+	}
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		data, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatalf("ReadFile %s: %v", f, err)
+		}
+		for i, line := range strings.Split(string(data), "\n") {
+			if !strings.HasPrefix(strings.TrimSpace(line), "//") {
+				continue
+			}
+			for _, n := range name.FindAllString(line, -1) {
+				if !defined[n] {
+					cited = append(cited, fmt.Sprintf("%s:%d cites %s", f, i+1, n))
+				}
+			}
+		}
+	}
+	if len(cited) > 0 {
+		t.Fatalf("comments name tests that do not exist: %v", cited)
 	}
 }
