@@ -14,9 +14,9 @@ import (
 	"syscall"
 	"time"
 
-	"kypassword-server/internal/api"
-	"kypassword-server/internal/sso"
-	"kypassword-server/internal/users"
+	"github.com/Busness-app/kypassword-server/internal/api"
+	"github.com/Busness-app/kypassword-server/internal/sso"
+	"github.com/Busness-app/kypassword-server/internal/users"
 )
 
 func main() {

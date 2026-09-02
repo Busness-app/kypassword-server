@@ -8,8 +8,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"kypassword-server/internal/sso"
-	"kypassword-server/internal/users"
+	"github.com/Busness-app/kypassword-server/internal/sso"
+	"github.com/Busness-app/kypassword-server/internal/users"
 )
 
 // mockIdP stands in for KySignOn, returning an id_token carrying exactly the claims given.

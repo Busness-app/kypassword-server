@@ -9,8 +9,8 @@ import (
 	"strconv"
 	"strings"
 
-	"kypassword-server/internal/users"
-	"kypassword-server/internal/vault"
+	"github.com/Busness-app/kypassword-server/internal/users"
+	"github.com/Busness-app/kypassword-server/internal/vault"
 )
 
 func (s *Server) handleVaultMetadata(w http.ResponseWriter, r *http.Request, u users.User) {
