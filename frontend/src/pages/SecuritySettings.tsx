@@ -1,7 +1,7 @@
 import React, { useState, useEffect, FormEvent } from "react";
 import { getJSON, putJSON, deleteJSON, toErrorMessage } from "../lib/api";
-import { wrapVaultKey } from "../lib/vaultCrypto";
-import { KeyRound, Shield, FileText, Smartphone, Trash2, CheckCircle2, QrCode } from "lucide-react";
+import { wrapVaultKey, bytesToHex } from "../lib/vaultCrypto";
+import { KeyRound, Shield, FileText, Smartphone, Trash2, CheckCircle2, QrCode, Download } from "lucide-react";
 import { DevicePairingModal } from "../components/DevicePairingModal";
 
 type Device = {
@@ -26,6 +26,7 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
   const [paperCode, setPaperCode] = useState<string | null>(null);
   const [ssoConfig, setSsoConfig] = useState<{ enabled: boolean; issuerUrl: string } | null>(null);
   const [showPairing, setShowPairing] = useState(false);
+  const [showVaultKey, setShowVaultKey] = useState(false);
 
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
@@ -109,6 +110,22 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
     } finally {
       setBusy(false);
     }
+  };
+
+  // The vault key in the form KeePassXC will accept. A downloaded .kdbx is encrypted with
+  // exactly this string, so without it the "open your vault in any KeePass client" fallback
+  // is not actually available to anyone.
+  const handleRevealVaultKey = () => {
+    if (showVaultKey) {
+      setShowVaultKey(false);
+      return;
+    }
+    if (!confirm(
+      "Your vault key unlocks everything, on any device, forever — and unlike your master " +
+      "password it cannot be changed without re-encrypting the vault. Only reveal it if you " +
+      "are printing it for offline recovery, and nobody can see your screen.\n\nShow it?",
+    )) return;
+    setShowVaultKey(true);
   };
 
   const handleRevokeDevice = async (id: string, name: string) => {
@@ -236,6 +253,47 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
 
         <button className="btn btn-secondary" onClick={handleGeneratePaperRecovery} disabled={busy}>
           Generate Printable Paper Key
+        </button>
+      </section>
+
+      {/* Offline recovery: the key that opens a downloaded vault in any KeePass client */}
+      <section className="field-card" style={{ marginBottom: "2rem" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "1rem" }}>
+          <Download size={20} color="var(--accent)" />
+          <h3 style={{ margin: 0 }}>Offline Vault Key</h3>
+        </div>
+        <p style={{ color: "var(--ink-muted)", fontSize: "0.85rem", marginBottom: "1.25rem" }}>
+          If KySignOn is ever unavailable you can still reach your passwords: download your vault
+          and open it in KeePass, KeePassXC or KeePassDX. The file's password is the key below —
+          type or paste it exactly. Keep a printed copy somewhere safe, because this server cannot
+          show it to you while it is down.
+        </p>
+
+        {showVaultKey ? (
+          <div
+            style={{
+              background: "#0d0f14",
+              border: "1px solid var(--accent)",
+              borderRadius: "8px",
+              padding: "1.25rem",
+              marginBottom: "1.25rem",
+              textAlign: "center",
+            }}
+          >
+            <div style={{ fontSize: "0.8rem", color: "var(--ink-muted)", marginBottom: "0.5rem" }}>
+              VAULT KEY — THE PASSWORD FOR YOUR DOWNLOADED .KDBX
+            </div>
+            <div
+              className="font-mono"
+              style={{ fontSize: "0.95rem", fontWeight: 700, color: "var(--accent)", wordBreak: "break-all" }}
+            >
+              {bytesToHex(vaultKey)}
+            </div>
+          </div>
+        ) : null}
+
+        <button className="btn btn-secondary" onClick={handleRevealVaultKey}>
+          {showVaultKey ? "Hide Vault Key" : "Show Vault Key"}
         </button>
       </section>
 

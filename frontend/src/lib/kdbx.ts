@@ -1,39 +1,51 @@
 import * as kdbxweb from "kdbxweb";
 import { bytesToHex } from "./vaultCrypto";
+import { argon2d, argon2i, argon2id } from "hash-wasm";
 // kdbxweb's UMD bundle defeats Node's CJS export lexer; classes arrive under `default`.
-const { CryptoEngine, Credentials, ProtectedValue, Kdbx, Consts } =
+const { CryptoEngine, Credentials, ProtectedValue, Kdbx, Consts, VarDictionary, Int64 } =
   (kdbxweb as { default?: typeof kdbxweb }).default ?? kdbxweb;
-// @ts-ignore
-import argon2 from "argon2-browser/dist/argon2-bundled.min.js";
 
-// Register Argon2 implementation with kdbxweb so KDBX4 Argon2 vaults can be opened and saved
-CryptoEngine.setArgon2Impl(
-  async (
-    password: ArrayBuffer,
-    salt: ArrayBuffer,
-    memory: number,
-    iterations: number,
-    length: number,
-    parallelism: number,
-    type: any,
-    version: any
-  ): Promise<ArrayBuffer> => {
-    const res = await argon2.hash({
-      pass: new Uint8Array(password),
-      salt: new Uint8Array(salt),
-      time: iterations,
-      mem: memory,
-      hashLen: length,
-      parallelism: parallelism,
-      type: type,
-      version: version,
-    });
-    return (res.hash.buffer as ArrayBuffer).slice(
-      res.hash.byteOffset,
-      res.hash.byteOffset + res.hash.byteLength
-    );
-  }
-);
+// KyAuth's KDBX vaults are Argon2d, so opening or writing one needs an Argon2 engine.
+// hash-wasm rather than argon2-browser because it runs under Node too — argon2-browser
+// resolves its WASM by URL and dies outside a browser, which left every Argon2 path in
+// this file untestable.
+// Exported only so a test can pin it. Getting the memory unit wrong here weakens every
+// vault by a factor of a thousand while leaving encryption, decryption and every
+// round-trip working perfectly — the header still advertises the strong parameters,
+// because the header is written independently of what the KDF actually consumed. Nothing
+// short of checking the derived bytes catches that, hence the pinned-key test in kdbx.test.ts.
+export async function deriveArgon2Key(
+  password: ArrayBuffer,
+  salt: ArrayBuffer,
+  memory: number,
+  iterations: number,
+  length: number,
+  parallelism: number,
+  type: number,
+  _version: number
+): Promise<ArrayBuffer> {
+  const options = {
+    password: new Uint8Array(password),
+    salt: new Uint8Array(salt),
+    parallelism,
+    iterations,
+    // kdbxweb passes memory in KiB and hash-wasm's memorySize is KiB, so this is a
+    // straight hand-off. Do not "convert" it.
+    memorySize: memory,
+    hashLength: length,
+    outputType: "binary" as const,
+  };
+  // KDBX header type values: 0 = Argon2d, 1 = Argon2i, 2 = Argon2id.
+  const hash =
+    type === 0 ? await argon2d(options) : type === 2 ? await argon2id(options) : await argon2i(options);
+  return hash.buffer.slice(hash.byteOffset, hash.byteOffset + hash.byteLength) as ArrayBuffer;
+}
+
+CryptoEngine.setArgon2Impl(deriveArgon2Key);
+
+// KyAuth writes its vaults with kotpass's Ver4x defaults. Matching them exactly is what
+// lets either client open the other's vault, and lets a downloaded file open in KeePassXC.
+const KOTPASS_ARGON2 = { memoryBytes: 32 * 1024 * 1024, iterations: 8, parallelism: 2 };
 
 export type VaultEntry = {
   uuid: string;
@@ -64,14 +76,28 @@ export class KeePassVault {
     this.credentials = credentials;
   }
 
+  // The credential is the vault key written as hexadecimal text, not the raw bytes.
+  // Both facts matter: it is what KyAuth uses, so either client opens the other's vault,
+  // and it is something a person can type into KeePassXC — which raw bytes are not, so a
+  // binary-keyed vault has no offline recovery path at all.
+  private static credentialFor(vaultKey: Uint8Array): kdbxweb.Credentials {
+    return new Credentials(ProtectedValue.fromString(bytesToHex(vaultKey)));
+  }
+
   // Create a new blank KDBX v4 vault encrypted with the random 256-bit vaultKey
   public static async createNew(vaultKey: Uint8Array, vaultName = "KyPasswords Vault"): Promise<KeePassVault> {
-    const keyBuf = vaultKey.buffer.slice(vaultKey.byteOffset, vaultKey.byteOffset + vaultKey.byteLength) as ArrayBuffer;
-    const cred = new Credentials(ProtectedValue.fromBinary(keyBuf));
+    const cred = KeePassVault.credentialFor(vaultKey);
     const db = Kdbx.create(cred, vaultName);
-    // ponytail: use native WebCrypto AES-KDF to avoid missing Argon2 WASM engine
-    db.header.setKdf(Consts.KdfId.Aes);
-    
+
+    // Argon2d with kotpass's Ver4x defaults, so our vaults and KyAuth's are the same kind
+    // of file. The parameters are set explicitly because kdbxweb's Argon2 defaults are far
+    // weaker (1 MiB, t=2, p=1) than kotpass's.
+    db.header.setKdf(Consts.KdfId.Argon2d);
+    const kdf = db.header.kdfParameters!;
+    kdf.set("M", VarDictionary.ValueType.UInt64, Int64.from(KOTPASS_ARGON2.memoryBytes));
+    kdf.set("I", VarDictionary.ValueType.UInt64, Int64.from(KOTPASS_ARGON2.iterations));
+    kdf.set("P", VarDictionary.ValueType.UInt32, KOTPASS_ARGON2.parallelism);
+
     // Create standard default folders
     const root = db.getDefaultGroup();
     db.createGroup(root, "General");
@@ -82,20 +108,16 @@ export class KeePassVault {
     return new KeePassVault(db, cred);
   }
 
-  // Open an existing encrypted KDBX v4 binary with the random vaultKey
+  // Open an existing encrypted KDBX v4 binary with the random vaultKey.
+  //
+  // One credential form, deliberately. An earlier build keyed vaults on the raw bytes and
+  // fell back to the hexadecimal form, but a failed attempt is not free: it runs the full
+  // KDF before reporting the wrong key, so with Argon2d at 32 MiB every unlock would pay
+  // an extra derivation. Both clients write hexadecimal now, so there is nothing to fall
+  // back to.
   public static async open(buffer: ArrayBuffer, vaultKey: Uint8Array): Promise<KeePassVault> {
-    const keyBuf = vaultKey.buffer.slice(vaultKey.byteOffset, vaultKey.byteOffset + vaultKey.byteLength) as ArrayBuffer;
-    const cred = new Credentials(ProtectedValue.fromBinary(keyBuf));
-    try {
-      return new KeePassVault(await Kdbx.load(buffer.slice(0), cred), cred);
-    } catch (error: unknown) {
-      if (typeof error !== "object" || error === null || !("code" in error) || error.code !== Consts.ErrorCodes.InvalidKey) {
-        throw error;
-      }
-      // KyAuth's KDBX library represents the same random key as hexadecimal password text.
-      const androidCred = new Credentials(ProtectedValue.fromString(bytesToHex(vaultKey)));
-      return new KeePassVault(await Kdbx.load(buffer.slice(0), androidCred), androidCred);
-    }
+    const cred = KeePassVault.credentialFor(vaultKey);
+    return new KeePassVault(await Kdbx.load(buffer, cred), cred);
   }
 
   // Export/Save the vault back into encrypted KDBX v4 ArrayBuffer
