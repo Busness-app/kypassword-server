@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -484,4 +485,25 @@ func (s *Store) VerifyIntegrity() (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+// ExportChain writes the log as shared-package records, and returns the anchor to
+// check them against. This is the form kyauditverify reads: the products store
+// different fields, so the records as the chain sees them are the only thing one
+// verifier can consume from all of them.
+func (s *Store) ExportChain(w io.Writer) (auditchain.Anchor, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	entries, err := s.readAll()
+	if err != nil {
+		return auditchain.Anchor{}, err
+	}
+	enc := json.NewEncoder(w)
+	for _, e := range entries {
+		if err := enc.Encode(recordOf(e)); err != nil {
+			return auditchain.Anchor{}, err
+		}
+	}
+	return s.anchor, nil
 }
