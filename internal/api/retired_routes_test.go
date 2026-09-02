@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"kypassword-server/internal/sso"
 	"kypassword-server/internal/users"
 )
 
@@ -100,5 +101,56 @@ func TestSurvivingRoutesStillExist(t *testing.T) {
 		if rec.Code != http.StatusUnauthorized {
 			t.Errorf("%s %s = %d, want 401", tc.method, tc.path, rec.Code)
 		}
+	}
+}
+
+func TestAdminSSOPutRefusesEnvironmentSourcedSettings(t *testing.T) {
+	// Accepting a write the next restart discards is worse than refusing it: the operator
+	// would be looking at a saved configuration that is not the one in force.
+	srv := newTestServer(t)
+	_, cookie := signedInUser(t, srv, "admin", users.RoleAdmin)
+
+	t.Setenv(sso.EnvIssuer, "https://signon.example")
+	t.Setenv(sso.EnvClientID, "kypassword")
+	t.Setenv(sso.EnvClientSecret, "s3cret")
+
+	body := strings.NewReader(`{"enabled":true,"issuerUrl":"https://attacker.example","clientId":"evil","clientSecret":"x"}`)
+	req := httptest.NewRequest(http.MethodPut, "/api/admin/sso", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(cookie)
+
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("PUT /api/admin/sso = %d, want 409", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), sso.EnvIssuer) {
+		t.Errorf("the refusal should name the environment as the source: %s", rec.Body)
+	}
+	if got := srv.ssoStore.Load(); got.IssuerURL != "https://signon.example" {
+		t.Errorf("settings changed anyway: %+v", got)
+	}
+}
+
+func TestAdminSSOPutStillWorksWithoutTheEnvironment(t *testing.T) {
+	srv := newTestServer(t)
+	_, cookie := signedInUser(t, srv, "admin", users.RoleAdmin)
+
+	for _, k := range []string{sso.EnvIssuer, sso.EnvClientID, sso.EnvClientSecret} {
+		t.Setenv(k, "")
+	}
+
+	body := strings.NewReader(`{"enabled":true,"issuerUrl":"https://signon.example","clientId":"kypassword","clientSecret":"s3cret","autoProvision":true}`)
+	req := httptest.NewRequest(http.MethodPut, "/api/admin/sso", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(cookie)
+
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT /api/admin/sso = %d, want 200", rec.Code)
+	}
+	if got := srv.ssoStore.Load(); got.IssuerURL != "https://signon.example" {
+		t.Errorf("settings were not saved: %+v", got)
 	}
 }

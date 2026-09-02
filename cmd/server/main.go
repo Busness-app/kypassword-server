@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"kypassword-server/internal/api"
+	"kypassword-server/internal/sso"
 	"kypassword-server/internal/users"
 )
 
@@ -39,6 +40,7 @@ func main() {
 	configDir := configDirFromEnv()
 
 	requireMigratedAccounts(configDir)
+	requireIdentityProvider(configDir)
 
 	retentionDays := 90
 	if r := os.Getenv("RETENTION_DAYS"); r != "" {
@@ -157,5 +159,25 @@ func requireMigratedAccounts(configDir string) {
 	log.Printf("Link each one:      kypassword-server link-sso --username <name> --sub <kysignon-user-id>")
 	log.Printf("Or retire it:       kypassword-server deactivate --username <name>")
 	log.Printf("The KySignOn user ID is the value shown in its admin user list, and is the same value it puts in the OIDC 'sub' claim.")
+	os.Exit(1)
+}
+
+// requireIdentityProvider refuses to start without an identity provider. KySignOn is the
+// only authenticator, so a server without one can authenticate nobody — starting would
+// only serve 503s to every sign-in attempt, and there is no local admin who could fix it
+// from the UI.
+func requireIdentityProvider(configDir string) {
+	settings := sso.NewStore(configDir).Load()
+	if settings.Enabled && settings.IssuerURL != "" && settings.ClientID != "" {
+		return
+	}
+
+	log.Printf("KyPassword authenticates only through KySignOn, and no identity provider is configured.")
+	log.Printf("Set these and restart:")
+	log.Printf("  %s        e.g. https://signon.example.com", sso.EnvIssuer)
+	log.Printf("  %s     the client ID KySignOn issued for KyPassword", sso.EnvClientID)
+	log.Printf("  %s the matching client secret", sso.EnvClientSecret)
+	log.Printf("Optional: %s, %s (defaults to true).", sso.EnvRedirectURI, sso.EnvAutoProvision)
+	log.Printf("These take precedence over %s/sso.json and cannot be changed from the admin UI.", configDir)
 	os.Exit(1)
 }

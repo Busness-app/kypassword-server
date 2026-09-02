@@ -67,6 +67,14 @@ func (s *Server) handleAdminSSOGet(w http.ResponseWriter, r *http.Request, admin
 }
 
 func (s *Server) handleAdminSSOPut(w http.ResponseWriter, r *http.Request, admin users.User) {
+	// Refuse rather than accept a write the next restart discards. Silently taking a
+	// change that does not survive is worse than saying no.
+	if s.ssoStore.EnvSourced() {
+		_, _ = s.audit.Log("admin.sso_write_refused", admin.ID, "", clientIP(r), "SSO is configured by the environment")
+		http.Error(w, "SSO is configured by the environment ("+sso.EnvIssuer+", "+sso.EnvClientID+", "+sso.EnvClientSecret+") and cannot be changed here. Edit the environment and restart.", http.StatusConflict)
+		return
+	}
+
 	var req sso.SSOSettings
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request", http.StatusBadRequest)
