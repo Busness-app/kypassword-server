@@ -331,3 +331,78 @@ func TestTruncationToLegacyPrefixIsRejected(t *testing.T) {
 		t.Fatalf("truncated chain accepted: ok=%v, err=%v", ok, err)
 	}
 }
+
+func TestTruncatedKeyedChainIsRejected(t *testing.T) {
+	dir, keyDir := t.TempDir(), t.TempDir()
+	store, err := NewStore(dir, keyDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	for _, action := range []string{"auth.login", "vault.upload", "vault.download"} {
+		if _, err := store.Log(action, "user1", "dev1", "127.0.0.1", action); err != nil {
+			t.Fatalf("Log failed: %v", err)
+		}
+	}
+
+	// Drop the most recent record. Every surviving entry still hashes correctly.
+	entries := readChain(t, dir)
+	writeChain(t, dir, entries[:len(entries)-1])
+
+	store2, err := NewStore(dir, keyDir)
+	if err != nil {
+		t.Fatalf("NewStore 2 failed: %v", err)
+	}
+	if ok, err := store2.VerifyIntegrity(); ok || err == nil {
+		t.Fatalf("truncated chain accepted: ok=%v, err=%v", ok, err)
+	}
+}
+
+func TestDeletedLogIsRejected(t *testing.T) {
+	dir, keyDir := t.TempDir(), t.TempDir()
+	store, err := NewStore(dir, keyDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	if _, err := store.Log("auth.login", "user1", "dev1", "127.0.0.1", "login"); err != nil {
+		t.Fatalf("Log failed: %v", err)
+	}
+	if err := os.Remove(filepath.Join(dir, "audit.jsonl")); err != nil {
+		t.Fatalf("Remove failed: %v", err)
+	}
+
+	store2, err := NewStore(dir, keyDir)
+	if err != nil {
+		t.Fatalf("NewStore 2 failed: %v", err)
+	}
+	if ok, err := store2.VerifyIntegrity(); ok || err == nil {
+		t.Fatalf("deleted log accepted: ok=%v, err=%v", ok, err)
+	}
+}
+
+// Appending after a truncation must not quietly rewrite the record of what the
+// log used to hold.
+func TestTruncationSurvivesFurtherLogging(t *testing.T) {
+	dir, keyDir := t.TempDir(), t.TempDir()
+	store, err := NewStore(dir, keyDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	for _, action := range []string{"auth.login", "vault.upload", "vault.download"} {
+		if _, err := store.Log(action, "user1", "dev1", "127.0.0.1", action); err != nil {
+			t.Fatalf("Log failed: %v", err)
+		}
+	}
+	entries := readChain(t, dir)
+	writeChain(t, dir, entries[:1])
+
+	store2, err := NewStore(dir, keyDir)
+	if err != nil {
+		t.Fatalf("NewStore 2 failed: %v", err)
+	}
+	if _, err := store2.Log("auth.login", "user1", "dev1", "127.0.0.1", "after truncation"); err != nil {
+		t.Fatalf("Log after truncation failed: %v", err)
+	}
+	if ok, err := store2.VerifyIntegrity(); ok || err == nil {
+		t.Fatalf("truncation erased by later logging: ok=%v, err=%v", ok, err)
+	}
+}
