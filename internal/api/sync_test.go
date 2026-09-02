@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"kypassword-server/internal/sso"
-	"kypassword-server/internal/users"
+	"github.com/Busness-app/kypassword-server/internal/sso"
+	"github.com/Busness-app/kypassword-server/internal/users"
 )
 
 // scimUserResource builds the exact payload kysignon-server's UserToSCIMResource emits.

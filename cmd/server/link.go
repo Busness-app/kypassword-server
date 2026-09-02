@@ -7,7 +7,7 @@ import (
 	"io"
 	"os"
 
-	"kypassword-server/internal/users"
+	"github.com/Busness-app/kypassword-server/internal/users"
 )
 
 // Migration subcommands. They exist because the operator cannot sign in to fix an

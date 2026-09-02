@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"strconv"
 
-	"kypassword-server/internal/sso"
-	"kypassword-server/internal/users"
+	"github.com/Busness-app/kypassword-server/internal/sso"
+	"github.com/Busness-app/kypassword-server/internal/users"
 )
 
 func (s *Server) handleAdminUsersList(w http.ResponseWriter, r *http.Request, admin users.User) {

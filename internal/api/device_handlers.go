@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"time"
 
-	"kypassword-server/internal/users"
-	"kypassword-server/internal/vault"
+	"github.com/Busness-app/kypassword-server/internal/users"
+	"github.com/Busness-app/kypassword-server/internal/vault"
 )
 
 func (s *Server) handlePairingStart(w http.ResponseWriter, r *http.Request, u users.User) {

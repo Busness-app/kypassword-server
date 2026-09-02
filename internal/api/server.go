@@ -10,11 +10,11 @@ import (
 	"sync"
 	"time"
 
-	"kypassword-server/internal/audit"
-	"kypassword-server/internal/devices"
-	"kypassword-server/internal/sso"
-	"kypassword-server/internal/users"
-	"kypassword-server/internal/vault"
+	"github.com/Busness-app/kypassword-server/internal/audit"
+	"github.com/Busness-app/kypassword-server/internal/devices"
+	"github.com/Busness-app/kypassword-server/internal/sso"
+	"github.com/Busness-app/kypassword-server/internal/users"
+	"github.com/Busness-app/kypassword-server/internal/vault"
 )
 
 type Session struct {

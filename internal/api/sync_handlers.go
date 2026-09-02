@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"strings"
 
-	kysync "kypassword-server/internal/sync"
-	"kypassword-server/internal/users"
+	kysync "github.com/Busness-app/kypassword-server/internal/sync"
+	"github.com/Busness-app/kypassword-server/internal/users"
 )
 
 // syncSecrets lists the secrets a replication request may be authenticated with, in
