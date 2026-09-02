@@ -2,7 +2,6 @@ package users
 
 import (
 	"crypto/rand"
-	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -12,15 +11,11 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"golang.org/x/crypto/scrypt"
 )
 
 var (
 	ErrNotFound      = errors.New("user not found")
 	ErrUsernameTaken = errors.New("username already taken")
-	ErrInvalidAuth   = errors.New("invalid credentials")
-	ErrUserInactive  = errors.New("user account is deactivated")
 )
 
 type Role string
@@ -31,20 +26,21 @@ const (
 )
 
 // User represents a KyPassword user record.
+//
+// It holds no authentication material of any kind. KySignOn authenticates; this server
+// only records who an identity is and what they may do. The master password never
+// reaches it, not even as a derived verifier — it is the client-side secret that unwraps
+// the vault key envelope, and nothing else.
 type User struct {
-	ID                 string    `json:"id"`
-	Username           string    `json:"username"`
-	Role               Role      `json:"role"`
-	Active             bool      `json:"active"`
-	PasswordHash       string    `json:"passwordHash"`
-	AuthSalt           string    `json:"authSalt"`
-	AuthIterations     int       `json:"authIterations"`
-	RecoveryHash       string    `json:"recoveryHash,omitempty"`
-	MustChangePassword bool      `json:"mustChangePassword"`
-	CreatedAt          time.Time `json:"createdAt"`
-	UpdatedAt          time.Time `json:"updatedAt"`
+	ID        string    `json:"id"`
+	Username  string    `json:"username"`
+	Role      Role      `json:"role"`
+	Active    bool      `json:"active"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
 
-	// SSO Linkage (KySignOn / Authentik / Keycloak)
+	// KySignOn linkage. SSOSub is the OIDC subject and the only key an identity is
+	// matched on; the rest are attributes carried along with it.
 	SSOSub      string `json:"ssoSub,omitempty"`
 	SSOUsername string `json:"ssoUsername,omitempty"`
 	SSOEmail    string `json:"ssoEmail,omitempty"`
@@ -53,28 +49,26 @@ type User struct {
 
 // Public returns a safe representation of the user for APIs.
 type Public struct {
-	ID                 string `json:"id"`
-	Username           string `json:"username"`
-	Role               Role   `json:"role"`
-	Active             bool   `json:"active"`
-	MustChangePassword bool   `json:"mustChangePassword"`
-	SSOSub             string `json:"ssoSub,omitempty"`
-	SSOUsername        string `json:"ssoUsername,omitempty"`
-	SSOEmail           string `json:"ssoEmail,omitempty"`
-	SSOLinkedAt        int64  `json:"ssoLinkedAt,omitempty"`
+	ID          string `json:"id"`
+	Username    string `json:"username"`
+	Role        Role   `json:"role"`
+	Active      bool   `json:"active"`
+	SSOSub      string `json:"ssoSub,omitempty"`
+	SSOUsername string `json:"ssoUsername,omitempty"`
+	SSOEmail    string `json:"ssoEmail,omitempty"`
+	SSOLinkedAt int64  `json:"ssoLinkedAt,omitempty"`
 }
 
 func (u User) Public() Public {
 	return Public{
-		ID:                 u.ID,
-		Username:           u.Username,
-		Role:               u.Role,
-		Active:             u.Active,
-		MustChangePassword: u.MustChangePassword,
-		SSOSub:             u.SSOSub,
-		SSOUsername:        u.SSOUsername,
-		SSOEmail:           u.SSOEmail,
-		SSOLinkedAt:        u.SSOLinkedAt,
+		ID:          u.ID,
+		Username:    u.Username,
+		Role:        u.Role,
+		Active:      u.Active,
+		SSOSub:      u.SSOSub,
+		SSOUsername: u.SSOUsername,
+		SSOEmail:    u.SSOEmail,
+		SSOLinkedAt: u.SSOLinkedAt,
 	}
 }
 
@@ -86,20 +80,12 @@ type Store struct {
 	bySSOSub map[string]string // SSOSub -> ID
 }
 
-// HashPassword hashes a credential using scrypt.
-func HashPassword(secret, saltHex string) (string, error) {
-	salt, err := hex.DecodeString(saltHex)
-	if err != nil {
-		return "", err
-	}
-	hash, err := scrypt.Key([]byte(secret), salt, 32768, 8, 1, 32)
-	if err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(hash), nil
-}
-
 // NewStore loads or creates a user store at the given path.
+//
+// A users.json written by an older build still carries passwordHash, authSalt,
+// authIterations, recoveryHash and mustChangePassword. encoding/json ignores keys the
+// struct no longer declares, so such a file loads cleanly and the retired fields are
+// erased from disk on the first save. There is nothing to migrate to.
 func NewStore(dir string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, fmt.Errorf("mkdir users dir: %w", err)
@@ -155,59 +141,8 @@ func (s *Store) saveLocked() error {
 	return os.Rename(tmpFile, s.filePath)
 }
 
-// Create provisions a new user with password.
-func (s *Store) Create(username, password string, role Role) (User, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	lower := strings.ToLower(strings.TrimSpace(username))
-	if lower == "" {
-		return User{}, errors.New("empty username")
-	}
-	if _, exists := s.byName[lower]; exists {
-		return User{}, ErrUsernameTaken
-	}
-
-	saltBytes := make([]byte, 16)
-	_, _ = rand.Read(saltBytes)
-	saltHex := hex.EncodeToString(saltBytes)
-
-	hash, err := HashPassword(password, saltHex)
-	if err != nil {
-		return User{}, err
-	}
-
-	idBytes := make([]byte, 16)
-	_, _ = rand.Read(idBytes)
-	id := hex.EncodeToString(idBytes)
-
-	now := time.Now().UTC()
-	u := User{
-		ID:                 id,
-		Username:           strings.TrimSpace(username),
-		Role:               role,
-		Active:             true,
-		PasswordHash:       hash,
-		AuthSalt:           saltHex,
-		AuthIterations:     600000,
-		MustChangePassword: false,
-		CreatedAt:          now,
-		UpdatedAt:          now,
-	}
-
-	s.users[id] = u
-	s.byName[lower] = id
-
-	if err := s.saveLocked(); err != nil {
-		delete(s.users, id)
-		delete(s.byName, lower)
-		return User{}, err
-	}
-
-	return u, nil
-}
-
-// CreateSSOUser provisions a new user via SSO without initial password.
+// CreateSSOUser provisions the local account for a KySignOn identity. It is the only way
+// an account comes into existence.
 func (s *Store) CreateSSOUser(username string, role Role, ssoSub, ssoUsername, ssoEmail string) (User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -223,29 +158,22 @@ func (s *Store) CreateSSOUser(username string, role Role, ssoSub, ssoUsername, s
 		return s.users[s.bySSOSub[ssoSub]], nil
 	}
 
-	saltBytes := make([]byte, 16)
-	_, _ = rand.Read(saltBytes)
-	saltHex := hex.EncodeToString(saltBytes)
-
 	idBytes := make([]byte, 16)
 	_, _ = rand.Read(idBytes)
 	id := hex.EncodeToString(idBytes)
 
 	now := time.Now().UTC()
 	u := User{
-		ID:                 id,
-		Username:           strings.TrimSpace(username),
-		Role:               role,
-		Active:             true,
-		AuthSalt:           saltHex,
-		AuthIterations:     600000,
-		MustChangePassword: false,
-		CreatedAt:          now,
-		UpdatedAt:          now,
-		SSOSub:             ssoSub,
-		SSOUsername:        ssoUsername,
-		SSOEmail:           ssoEmail,
-		SSOLinkedAt:        now.Unix(),
+		ID:          id,
+		Username:    strings.TrimSpace(username),
+		Role:        role,
+		Active:      true,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+		SSOSub:      ssoSub,
+		SSOUsername: ssoUsername,
+		SSOEmail:    ssoEmail,
+		SSOLinkedAt: now.Unix(),
 	}
 
 	s.users[id] = u
@@ -310,36 +238,6 @@ func (s *Store) List() []User {
 	return list
 }
 
-// VerifyAuth checks the user's password or derived auth secret.
-func (s *Store) VerifyAuth(username, secret string) (User, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	id, exists := s.byName[strings.ToLower(strings.TrimSpace(username))]
-	if !exists {
-		return User{}, ErrInvalidAuth
-	}
-
-	u := s.users[id]
-	if !u.Active {
-		return User{}, ErrUserInactive
-	}
-	if u.PasswordHash == "" {
-		return User{}, ErrInvalidAuth
-	}
-
-	computed, err := HashPassword(secret, u.AuthSalt)
-	if err != nil {
-		return User{}, err
-	}
-
-	if subtle.ConstantTimeCompare([]byte(computed), []byte(u.PasswordHash)) != 1 {
-		return User{}, ErrInvalidAuth
-	}
-
-	return u, nil
-}
-
 // LinkSSO attaches an SSO identity to a user.
 func (s *Store) LinkSSO(id, sub, username, email string) error {
 	s.mu.Lock()
@@ -366,58 +264,6 @@ func (s *Store) LinkSSO(id, sub, username, email string) error {
 
 	s.users[id] = u
 	s.bySSOSub[sub] = id
-	return s.saveLocked()
-}
-
-// UnlinkSSO removes an SSO identity from a user.
-func (s *Store) UnlinkSSO(id string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	u, exists := s.users[id]
-	if !exists {
-		return ErrNotFound
-	}
-
-	if u.SSOSub != "" {
-		delete(s.bySSOSub, u.SSOSub)
-	}
-
-	u.SSOSub = ""
-	u.SSOUsername = ""
-	u.SSOEmail = ""
-	u.SSOLinkedAt = 0
-	u.UpdatedAt = time.Now().UTC()
-
-	s.users[id] = u
-	return s.saveLocked()
-}
-
-// SetPassword updates a user's password.
-func (s *Store) SetPassword(id, newPassword string, requireChange bool) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	u, exists := s.users[id]
-	if !exists {
-		return ErrNotFound
-	}
-
-	saltBytes := make([]byte, 16)
-	_, _ = rand.Read(saltBytes)
-	saltHex := hex.EncodeToString(saltBytes)
-
-	hash, err := HashPassword(newPassword, saltHex)
-	if err != nil {
-		return err
-	}
-
-	u.PasswordHash = hash
-	u.AuthSalt = saltHex
-	u.MustChangePassword = requireChange
-	u.UpdatedAt = time.Now().UTC()
-
-	s.users[id] = u
 	return s.saveLocked()
 }
 
@@ -469,53 +315,8 @@ func (s *Store) Reactivate(id string) error {
 	return s.saveLocked()
 }
 
-// SetPaperRecovery saves the hashed paper recovery secret.
-func (s *Store) SetPaperRecovery(id, recoverySecret string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	u, exists := s.users[id]
-	if !exists {
-		return ErrNotFound
-	}
-
-	hash, err := HashPassword(recoverySecret, u.AuthSalt)
-	if err != nil {
-		return err
-	}
-
-	u.RecoveryHash = hash
-	u.UpdatedAt = time.Now().UTC()
-	s.users[id] = u
-	return s.saveLocked()
-}
-
-// VerifyPaperRecovery checks if the paper recovery secret matches.
-func (s *Store) VerifyPaperRecovery(username, recoverySecret string) (User, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	id, exists := s.byName[strings.ToLower(strings.TrimSpace(username))]
-	if !exists {
-		return User{}, ErrInvalidAuth
-	}
-
-	u := s.users[id]
-	if !u.Active {
-		return User{}, ErrUserInactive
-	}
-	if u.RecoveryHash == "" {
-		return User{}, errors.New("no recovery secret configured for account")
-	}
-
-	computed, err := HashPassword(recoverySecret, u.AuthSalt)
-	if err != nil {
-		return User{}, err
-	}
-
-	if subtle.ConstantTimeCompare([]byte(computed), []byte(u.RecoveryHash)) != 1 {
-		return User{}, ErrInvalidAuth
-	}
-
-	return u, nil
-}
+// Paper recovery is deliberately absent. It used to verify a server-side hash and start a
+// session, which under SSO-only would be a second way to authenticate. The capability
+// itself is unharmed: the recovery-wrapped key envelope lives in vault metadata and is
+// unwrapped client-side, after a KySignOn session already exists. It unlocks the vault,
+// not the site.
