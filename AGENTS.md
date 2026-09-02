@@ -118,6 +118,42 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
 - `frontend/src/lib/storage.ts`: manages the persistent IndexedDB `keys` vault on trusted devices
   to allow 1-click SSO access without typing a password; explicit "Forget This Device" controls
   clear stored secrets from browser storage.
+- `frontend/src/lib/vaultCrypto.ts`: the vault key envelope — **the only place a
+  human-chosen secret is stretched**. Everything else is keyed on a 256-bit random vault
+  key, where the KDF is near-irrelevant; here it is the whole defence, and the envelope is
+  stored server-side, so anyone holding a backup can attack the master password offline
+  forever. Argon2id, m=64 MiB, t=3, p=1 (OWASP), AES-GCM over the vault key.
+
+  The envelope is self-describing so parameters can be raised later without a format break:
+
+  ```json
+  {"kdf":"argon2id","salt":"…","iv":"…","ciphertext":"…",
+   "memoryKiB":65536,"iterations":3,"parallelism":1}
+  ```
+
+  **`memoryKiB` is KiB.** The field is named for its unit on purpose — mixing it up runs
+  Argon2 on a thousandth of the intended memory while every round-trip still succeeds and
+  the recorded parameters still read correctly. `deriveEnvelopeKey` is exported and pinned
+  to a known vector in `vaultCrypto.test.ts` for exactly that reason; the parameter
+  assertions alone cannot catch it, because they only check what was written.
+
+  **This is a cross-product format.** KyAuth reads *and writes* envelopes
+  (`KyPasswordEnvelopeCrypto.kt`), and today it writes PBKDF2-HMAC-SHA256 at 600k
+  iterations. An envelope with no `kdf` field is PBKDF2 by definition, and
+  `unwrapVaultKey` still reads that shape so a vault uploaded by an un-updated KyAuth
+  remains openable. Remove the PBKDF2 path only once KyAuth writes Argon2id.
+
+  Shared vector for whoever implements the Kotlin side — Argon2id, m=65536 KiB, t=3, p=1,
+  32-byte output, password `correct horse battery staple`, salt = 16 bytes of `0x03`:
+
+  ```
+  73eb74162616418d643f08dc0856539ea61400cb268f85ce8df01d8257795b8d
+  ```
+
+  Both implementations must produce that. Unit tests per repo only prove each side is
+  self-consistent; agreeing on a vector is what proves they interoperate — the same lesson
+  the silently-mismatched replication format taught.
+
 - `frontend/src/lib/kdbx.ts`: client-side KDBX v4 vault, written to be byte-compatible with
   KyAuth so either client opens the other's file and so a downloaded vault opens in KeePassXC.
   Two properties carry that, and both are load-bearing:
