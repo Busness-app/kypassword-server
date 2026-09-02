@@ -71,7 +71,7 @@ func NewServer(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("init devices store: %w", err)
 	}
 
-	aStore, err := audit.NewStore(cfg.DataDir + "/audit")
+	aStore, err := audit.NewStore(cfg.DataDir+"/audit", cfg.ConfigDir)
 	if err != nil {
 		return nil, fmt.Errorf("init audit store: %w", err)
 	}
