@@ -48,14 +48,28 @@ export function LoginPage() {
           </div>
         ) : null}
 
-        <a
-          href="/api/auth/oidc/login"
-          className="btn btn-primary"
-          style={{ width: "100%", marginBottom: "1.25rem" }}
-          aria-disabled={ssoEnabled === false}
-        >
-          <ShieldCheck size={18} /> Sign in with KySignOn
-        </a>
+        {/* A link with aria-disabled still navigates and still takes focus, so when
+            KySignOn is unavailable this becomes a real disabled button instead: the click
+            goes nowhere, the control leaves the tab order, and what a screen reader
+            announces matches what the control actually does. */}
+        {ssoEnabled === false ? (
+          <button
+            type="button"
+            className="btn btn-primary"
+            style={{ width: "100%", marginBottom: "1.25rem" }}
+            disabled
+          >
+            <ShieldCheck size={18} /> Sign in with KySignOn
+          </button>
+        ) : (
+          <a
+            href="/api/auth/oidc/login"
+            className="btn btn-primary"
+            style={{ width: "100%", marginBottom: "1.25rem" }}
+          >
+            <ShieldCheck size={18} /> Sign in with KySignOn
+          </a>
+        )}
 
         <div
           style={{

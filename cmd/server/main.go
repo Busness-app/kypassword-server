@@ -169,6 +169,17 @@ func requireMigratedAccounts(configDir string) {
 func requireIdentityProvider(configDir string) {
 	settings := sso.NewStore(configDir).Load()
 	if settings.Enabled && settings.IssuerURL != "" && settings.ClientID != "" {
+		// A client secret is deliberately not required here. sso.ExchangeCode omits it
+		// when empty and always sends the PKCE code_verifier, so a public client is a
+		// supported configuration and refusing to start would break one. But a missing
+		// secret is far more often an incomplete confidential setup than a deliberate
+		// public one, and that only surfaces as a token-exchange failure at first login.
+		// So say which mode is in force, at boot, where an operator will see it.
+		mode := "confidential client"
+		if settings.ClientSecret == "" {
+			mode = "public client (no client secret configured; token exchange relies on PKCE alone)"
+		}
+		log.Printf("KySignOn: %s, issuer %s, client %s", mode, settings.IssuerURL, settings.ClientID)
 		return
 	}
 
@@ -176,7 +187,7 @@ func requireIdentityProvider(configDir string) {
 	log.Printf("Set these and restart:")
 	log.Printf("  %s        e.g. https://signon.example.com", sso.EnvIssuer)
 	log.Printf("  %s     the client ID KySignOn issued for KyPassword", sso.EnvClientID)
-	log.Printf("  %s the matching client secret", sso.EnvClientSecret)
+	log.Printf("  %s the matching client secret, required for a confidential client", sso.EnvClientSecret)
 	log.Printf("Optional: %s, %s (defaults to true).", sso.EnvRedirectURI, sso.EnvAutoProvision)
 	log.Printf("These take precedence over %s/sso.json and cannot be changed from the admin UI.", configDir)
 	os.Exit(1)
