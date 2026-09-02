@@ -179,7 +179,7 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "failed to link account: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-		_, _ = s.audit.Log("auth.sso_linked", linkUserID, "", clientIP(r), "linked SSO subject "+claims.Sub)
+		_, _ = s.audit.Log(r.Context(), "auth.sso_linked", linkUserID, "", clientIP(r), "linked SSO subject "+claims.Sub)
 		http.Redirect(w, r, "/#sso=linked", http.StatusFound)
 		return
 	}
@@ -220,7 +220,7 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		user = createdUser
-		_, _ = s.audit.Log("auth.sso_provisioned", user.ID, "", clientIP(r), "auto-provisioned user via SSO")
+		_, _ = s.audit.Log(r.Context(), "auth.sso_provisioned", user.ID, "", clientIP(r), "auto-provisioned user via SSO")
 	}
 
 	if !user.Active {
@@ -233,7 +233,7 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, _ = s.audit.Log("auth.sso_login", user.ID, "", clientIP(r), "signed in via SSO")
+	_, _ = s.audit.Log(r.Context(), "auth.sso_login", user.ID, "", clientIP(r), "signed in via SSO")
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 
@@ -261,7 +261,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request, u users.Us
 		MaxAge:   -1,
 	})
 
-	_, _ = s.audit.Log("auth.logout", u.ID, "", clientIP(r), "logged out")
+	_, _ = s.audit.Log(r.Context(), "auth.logout", u.ID, "", clientIP(r), "logged out")
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 

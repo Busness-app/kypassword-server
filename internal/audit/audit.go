@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -12,16 +13,18 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Busness-app/ky-primitives/auditchain"
-	"time"
 )
-
-// chainVersion is the version stamped on every entry this build writes.
-const chainVersion = 1
 
 // genesisHash is the PrevHash of the first entry in a chain.
 const genesisHash = "0000000000000000000000000000000000000000000000000000000000000000"
+
+// appendTimeout bounds Append's wait for the chain lock. It does not bound persist,
+// which runs with that lock held and no context reaching it, so a store that hangs
+// hangs this caller for as long as it stays hung.
+var appendTimeout = 5 * time.Second
 
 // Entry represents a single tamper-evident audit record in the chain.
 type Entry struct {
@@ -70,44 +73,33 @@ type Store struct {
 	anchor    auditchain.Anchor
 }
 
-// legacyHash is the digest this server used before the chain moved to the shared
-// format: an unkeyed SHA-256 before the chain was keyed, an HMAC after.
+// legacyHash is the keyed digest this server used before the chain moved to the
+// shared format. It joined the fields with a bare "|", so content carrying the
+// delimiter could be shifted into a neighbouring field without changing the digest.
 //
-// Both joined the fields with a bare "|", so content carrying the delimiter could
-// be shifted into a neighbouring field without changing the digest. It is retained
-// only to recognise entries written that way, never to write one.
+// The unkeyed variant that preceded it is gone. It was chained under no secret at
+// all, so anyone who could write the log could rewrite it and recompute every
+// digest; the boundary that said where those entries stopped was never persisted.
 //
-// Deprecated: new entries are written by auditchain.
-func (s *Store) legacyHash(e Entry, keyed bool) string {
+// Deprecated: retained only to recognise entries written this way, never to write
+// one. New entries are written by auditchain.
+func (s *Store) legacyHash(e Entry) string {
 	raw := fmt.Sprintf("%d|%s|%s|%s|%s|%s|%s|%s",
 		e.Index, e.Timestamp.Format(time.RFC3339Nano), e.Action,
 		e.UserID, e.DeviceID, e.IPAddress, e.Details, e.PrevHash)
-
-	if !keyed {
-		sum := sha256.Sum256([]byte(raw))
-		return hex.EncodeToString(sum[:])
-	}
 
 	mac := hmac.New(sha256.New, s.key)
 	mac.Write([]byte(raw))
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-// chainState is what the log is expected to contain, held beside the key rather
-// than beside the log. Hashes alone cannot detect a log that has had records
-// removed, because what remains still chains correctly; only a record kept out of
-// the attacker's reach can.
-// chainState is the anchor persisted outside the log: how many entries it held
-// and the digest of the last one. Without it a log truncated at the end verifies
-// perfectly.
+// chainState is the anchor persisted outside the log: how many entries it held and
+// the digest of the last one, held beside the key rather than beside the log.
+// Hashes alone cannot detect a log that has had records removed, because what
+// remains still chains correctly; only a mark out of the attacker's reach can.
 type chainState struct {
 	Count uint64 `json:"count"`
 	Hash  string `json:"hash,omitempty"`
-
-	// LegacyAnchor is the first index that the previous format required to be
-	// keyed. It is read only while converting a chain written under that format,
-	// to decide which entries may still carry an unkeyed digest.
-	LegacyAnchor int64 `json:"anchor,omitempty"`
 }
 
 // loadState reads the anchor, creating an empty one on first use.
@@ -227,21 +219,79 @@ func NewStore(dir, keyDir string) (*Store, error) {
 	}
 
 	last := entries[len(entries)-1]
-	if s.chain, err = auditchain.Resume(key, recordOf(last)); err != nil {
+	anchor, err := s.placeTail(entries)
+	if err != nil {
 		return nil, err
 	}
-
-	// A tail exactly one entry past the anchor is this store's own append,
-	// interrupted before the anchor was written: only a key holder can produce an
-	// entry that carries its own digest. A longer overrun is left for
-	// VerifyIntegrity to report.
-	if uint64(last.Index)+1 == s.anchor.Count+1 && s.anchor.Count > 0 {
-		s.anchor = s.chain.Anchor()
+	if s.chain, err = auditchain.Resume(key, recordOf(last), anchor); err != nil {
+		return nil, err
+	}
+	if anchor != s.anchor {
+		s.anchor = anchor
 		if err := s.saveAnchor(); err != nil {
 			return nil, err
 		}
 	}
 	return s, nil
+}
+
+// placeTail returns the anchor to resume the log against. Resume requires one that
+// names the last record as the tail, so every way the stored mark can disagree with
+// the log has to be settled here rather than after the call.
+func (s *Store) placeTail(entries []Entry) (auditchain.Anchor, error) {
+	n := uint64(len(entries))
+	last := entries[len(entries)-1]
+
+	switch {
+	case s.anchor.Count == 0:
+		// A log with no mark cannot be placed. The mark is the only record of how
+		// long the log is meant to be, so without it a log with entries removed and
+		// one that is intact are the same file. Minting a mark here would bless
+		// whatever is on disk, and one append used to do exactly that.
+		return auditchain.Anchor{}, fmt.Errorf("%w: %s holds %d records but %s records none. "+
+			"The mark is missing, so a truncated log cannot be told from an intact one. "+
+			"Restore it from backup, or move both files aside to begin a new chain and keep "+
+			"the old pair for the auditor", auditchain.ErrBrokenChain, s.filePath, n, s.statePath)
+
+	case n < s.anchor.Count:
+		// Fewer records than the mark counted. Resuming at this tail would mint a
+		// sequence number that already exists: a fork that persists cleanly and can
+		// never verify again. Refuse to start rather than append over the evidence.
+		return auditchain.Anchor{}, fmt.Errorf("%w: %s holds %d records but the mark in %s counts %d. "+
+			"Entries have been removed from the end of the log; appending would write over the gap, "+
+			"so this server will not start. Restore the log from backup, or move both files aside to "+
+			"begin a new chain and keep the old pair for the auditor",
+			auditchain.ErrTruncated, s.filePath, n, s.statePath, s.anchor.Count)
+
+	case n > s.anchor.Count:
+		// The mark is behind the log: records landed and the mark write that should
+		// have followed did not. One behind is the classic interrupted write; several
+		// behind is a config volume that was unwritable for a while, which is a disk
+		// fault and not tampering. So walk the whole run: every record past the mark
+		// must sit at its own position, carry its own digest, and follow the one
+		// before it, starting from the mark's own hash. Minting any one of them still
+		// requires the key, so accepting a run is no weaker than accepting one — but
+		// without the predecessor check a re-minted fork would be adopted here.
+		prev := s.anchor.Hash
+		for i := s.anchor.Count; i < n; i++ {
+			rec := recordOf(entries[i])
+			if rec.Seq != i+1 {
+				return auditchain.Anchor{}, fmt.Errorf("%w: %s overruns the mark in %s and record %d sits at position %d",
+					auditchain.ErrBrokenChain, s.filePath, s.statePath, rec.Seq, i+1)
+			}
+			if err := auditchain.VerifyRecord(s.key, rec); err != nil {
+				return auditchain.Anchor{}, fmt.Errorf("audit: %s overruns the mark in %s and record %d does not verify: %w",
+					s.filePath, s.statePath, rec.Seq, err)
+			}
+			if rec.Prev != prev {
+				return auditchain.Anchor{}, fmt.Errorf("%w: %s overruns the mark in %s and record %d does not follow its predecessor",
+					auditchain.ErrBrokenChain, s.filePath, s.statePath, rec.Seq)
+			}
+			prev = rec.Hash
+		}
+		return auditchain.Anchor{Count: n, Hash: last.Hash}, nil
+	}
+	return s.anchor, nil
 }
 
 // readAll returns the log oldest first, or nothing if it does not exist yet.
@@ -272,72 +322,64 @@ func (s *Store) saveAnchor() error {
 	return writeState(s.statePath, chainState{Count: s.anchor.Count, Hash: s.anchor.Hash})
 }
 
-// converge rewrites a log written under this server's own hashing onto the shared
-// package's digests. It runs once, when the log does not already carry them.
+// converge rewrites a log written under this server's own keyed hashing onto the
+// shared package's digests. It runs once, when the log does not already carry them.
 //
-// Every entry must first verify under whichever digest wrote it, so a log that
-// was already broken is never blessed. An unkeyed digest is accepted only below
-// the index the previous format recorded as the first keyed one — otherwise an
-// attacker could downgrade keyed entries and have the conversion bless them.
+// Every entry must first verify under the digest that wrote it, so a log that was
+// already broken is never blessed, and the mark must not already count more entries
+// than the log holds: converting then would save a fresh mark over the evidence of
+// a truncation. When conversion is refused the log is left exactly as it is, and
+// NewStore reports it by refusing to place the tail.
 func (s *Store) converge(entries []Entry, st chainState) ([]Entry, error) {
 	if len(entries) == 0 {
 		return entries, nil
 	}
-	if _, err := auditchain.Resume(s.key, recordOf(entries[len(entries)-1])); err == nil {
+	// Is this log already in the shared digest format? That is all this asks.
+	// Resume would also assert that the record is the tail, which is a different
+	// question and not the one converge needs answered.
+	if auditchain.VerifyRecord(s.key, recordOf(entries[len(entries)-1])) == nil {
+		return entries, nil
+	}
+	if st.Count > uint64(len(entries)) || !s.legacyChainVerifies(entries) {
 		return entries, nil
 	}
 
-	unkeyedLimit := st.LegacyAnchor
-	if st.Count == 0 {
-		unkeyedLimit = int64(len(entries))
+	// Replay, not a per-record Append: the log is written once after the loop and
+	// the mark saved once after that, so a persist callback per record would have
+	// nothing to persist.
+	tuples := make([][]string, 0, len(entries))
+	for _, e := range entries {
+		tuples = append(tuples, fieldsOf(e))
 	}
-	if !s.legacyChainVerifies(entries, unkeyedLimit) {
-		// Leave the log exactly as it is. Refusing to open would let anyone who
-		// can write it stop the server; VerifyIntegrity reports what is wrong.
-		return entries, nil
-	}
-
-	chain, err := auditchain.New(s.key)
+	records, anchor, err := auditchain.Replay(s.key, tuples)
 	if err != nil {
 		return nil, err
 	}
 	converted := make([]Entry, 0, len(entries))
-	for _, e := range entries {
-		rec, err := chain.Append(fieldsOf(e)...)
-		if err != nil {
-			return nil, err
-		}
-		e.Index, e.PrevHash, e.Hash = int64(rec.Seq)-1, rec.Prev, rec.Hash
+	for i, e := range entries {
+		e.Index, e.PrevHash, e.Hash = int64(records[i].Seq)-1, records[i].Prev, records[i].Hash
 		converted = append(converted, e)
 	}
 
 	if err := s.rewrite(converted); err != nil {
 		return nil, err
 	}
-	s.anchor = chain.Anchor()
+	s.anchor = anchor
 	if err := s.saveAnchor(); err != nil {
 		return nil, err
 	}
 	return converted, nil
 }
 
-// legacyChainVerifies reports whether every entry carries the digest the previous
-// format would have written, with the links and indices intact. An unkeyed digest
-// counts only below unkeyedLimit: otherwise an attacker could downgrade keyed
-// entries and have the conversion bless them.
-func (s *Store) legacyChainVerifies(entries []Entry, unkeyedLimit int64) bool {
+// legacyChainVerifies reports whether every entry carries the keyed digest the
+// previous format would have written, with the links and indices intact.
+func (s *Store) legacyChainVerifies(entries []Entry) bool {
 	prev := genesisHash
 	for i, e := range entries {
 		if e.Index != int64(i) || e.PrevHash != prev {
 			return false
 		}
-		switch e.Hash {
-		case s.legacyHash(e, true):
-		case s.legacyHash(e, false):
-			if e.Index >= unkeyedLimit {
-				return false
-			}
-		default:
+		if !hmac.Equal([]byte(e.Hash), []byte(s.legacyHash(e))) {
 			return false
 		}
 		prev = e.Hash
@@ -366,13 +408,29 @@ func (s *Store) rewrite(entries []Entry) error {
 }
 
 // Log records an audit action in the hash-chain.
-func (s *Store) Log(action, userID, deviceID, ip, details string) (Entry, error) {
+//
+// ctx is accepted for its values; its cancellation is deliberately dropped. Handlers
+// pass r.Context(), which dies the instant the client hangs up, and every call site
+// discards Log's error — so honouring it would let a client suppress the record of
+// what it just did by aborting the connection after the handler had already acted.
+// The records an attacking client most wants gone, device.pairing_failed and
+// sync.rejected, are exactly the ones written that way. The audit write is not the
+// caller's to cancel; TestAbortedRequestStillRecordsTheAudit pins it.
+func (s *Store) Log(ctx context.Context, action, userID, deviceID, ip, details string) (Entry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	now := time.Now().UTC()
+	// Derived after the mutex, not before. s.mu is a plain sync.Mutex that no context
+	// can interrupt, so a deadline started above this line is spent waiting on it: a
+	// caller queued behind a slow store would reach Append with an already-dead
+	// context and throw its record away. That is the same suppression reached by load
+	// instead of by a dropped connection. Every waiter gets its budget measured from
+	// the moment it can make progress; TestQueuedLogSpendsItsBudgetOnTheChain pins it.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), appendTimeout)
+	defer cancel()
+
 	entry := Entry{
-		Timestamp: now,
+		Timestamp: time.Now().UTC(),
 		Action:    action,
 		UserID:    userID,
 		DeviceID:  deviceID,
@@ -380,39 +438,45 @@ func (s *Store) Log(action, userID, deviceID, ip, details string) (Entry, error)
 		Details:   details,
 	}
 
-	rec, err := s.chain.Append(fieldsOf(entry)...)
+	var anchorErr error
+	_, err := s.chain.Append(ctx, func(r auditchain.Record, a auditchain.Anchor) error {
+		entry.Index, entry.PrevHash, entry.Hash = int64(r.Seq)-1, r.Prev, r.Hash
+		data, err := json.Marshal(entry)
+		if err != nil {
+			return err
+		}
+		data = append(data, '\n')
+
+		f, err := os.OpenFile(s.filePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		if _, err := f.Write(data); err != nil {
+			return err
+		}
+
+		// Entry first, mark second, and the mark's failure is reported from Log
+		// rather than to the chain. The record is already on disk, so failing the
+		// append here would leave the chain a step behind the log and the next Log
+		// would reuse this sequence number — forking it permanently, and silently,
+		// because the mark would already have been advanced. A mark left behind is
+		// just the interrupted write placeTail reconciles.
+		//
+		// Only ever forward: if entries were removed and the log is being appended
+		// to again, the recorded mark is the evidence and must not be overwritten.
+		if a.Count > s.anchor.Count {
+			s.anchor = a
+			anchorErr = s.saveAnchor()
+		}
+		return nil
+	}, fieldsOf(entry)...)
 	if err != nil {
 		return Entry{}, fmt.Errorf("extend audit chain: %w", err)
 	}
-	entry.Index, entry.PrevHash, entry.Hash = int64(rec.Seq)-1, rec.Prev, rec.Hash
-
-	data, err := json.Marshal(entry)
-	if err != nil {
-		return Entry{}, err
+	if anchorErr != nil {
+		return entry, fmt.Errorf("record audit chain anchor: %w", anchorErr)
 	}
-	data = append(data, '\n')
-
-	f, err := os.OpenFile(s.filePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
-	if err != nil {
-		return Entry{}, err
-	}
-	defer f.Close()
-
-	if _, err := f.Write(data); err != nil {
-		return Entry{}, err
-	}
-
-	// Only ever forward. If entries were removed and the log is being appended to
-	// again, the recorded anchor is the evidence and must not be overwritten.
-	// Written after the entry, so an interrupted write leaves the anchor one
-	// behind rather than accusing a healthy log; NewStore adopts that case.
-	if a := s.chain.Anchor(); a.Count > s.anchor.Count {
-		s.anchor = a
-		if err := s.saveAnchor(); err != nil {
-			return Entry{}, fmt.Errorf("record audit chain anchor: %w", err)
-		}
-	}
-
 	return entry, nil
 }
 

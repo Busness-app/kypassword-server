@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -311,5 +312,42 @@ func TestAuditLogIntegrity(t *testing.T) {
 	_ = json.NewDecoder(rec.Body).Decode(&verifyResp)
 	if verifyResp["valid"] != true {
 		t.Errorf("expected valid audit chain: %+v", verifyResp)
+	}
+}
+
+// A client that hangs up after the handler has already acted must not take its audit
+// record with it. r.Context() dies the instant the connection does, every Log call
+// site discards the error, and handlers log last — so honouring that cancellation
+// meant an aborted request left no trace at all, with the same HTTP status and a
+// chain that still verified clean.
+func TestAbortedRequestStillRecordsTheAudit(t *testing.T) {
+	srv := newTestServer(t)
+	_, cookie := signedInUser(t, srv, "admin", users.RoleAdmin)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // the client is already gone
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/logout", nil).WithContext(ctx)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /api/auth/logout status = %d, want 200", rec.Code)
+	}
+
+	entries, err := srv.audit.List(0)
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	logged := false
+	for _, e := range entries {
+		if e.Action == "auth.logout" {
+			logged = true
+		}
+	}
+	if !logged {
+		t.Fatalf("the aborted request logged out but left no audit record: %+v", entries)
+	}
+	if ok, err := srv.audit.VerifyIntegrity(); !ok || err != nil {
+		t.Fatalf("audit chain does not verify: ok=%v, err=%v", ok, err)
 	}
 }
