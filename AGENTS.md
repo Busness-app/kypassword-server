@@ -118,16 +118,30 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
 - `frontend/src/lib/storage.ts`: manages the persistent IndexedDB `keys` vault on trusted devices
   to allow 1-click SSO access without typing a password; explicit "Forget This Device" controls
   clear stored secrets from browser storage.
-- `frontend/src/lib/kdbx.ts`: client-side KDBX v4 vault. `open()` tries the raw 256-bit vault key
-  first and, only on `InvalidKey`, retries with the same key as a hexadecimal password string —
-  which is how KyAuth's KDBX library represents it (`KdbxPasswordVault.kt`, `Credentials.from(
-  EncryptedValue.fromString(bytesToHex(vaultKey)))`). Both attempts copy the buffer, because
-  `Kdbx.load` consumes it. A vault opened the KyAuth way is saved back the same way, so it stays
-  readable on Android.
-  ponytail: `createNew` writes AES-KDF while KyAuth writes Argon2, so a vault's KDF depends on which
-  client last saved it. Both clients read both. Argon2 works in the browser (the WASM is inlined) but
-  not under `node --test`, which is why the interop test forces AES — upgrade path is a
-  browser-capable test runner, then unify on Argon2.
+- `frontend/src/lib/kdbx.ts`: client-side KDBX v4 vault, written to be byte-compatible with
+  KyAuth so either client opens the other's file and so a downloaded vault opens in KeePassXC.
+  Two properties carry that, and both are load-bearing:
+  - **The credential is the vault key as hexadecimal text**, never the raw bytes. That is what
+    KyAuth uses (`KdbxPasswordVault.kt`: `Credentials.from(EncryptedValue.fromString(
+    bytesToHex(vaultKey)))`), and it is the only form a human can type into KeePassXC. A
+    binary-keyed vault has no offline recovery path at all — the file opens with nothing a
+    person can enter.
+  - **Argon2d with kotpass's `Ver4x.create()` parameters**: m=32 MiB, t=8, p=2, set explicitly
+    because kdbxweb's Argon2 defaults are far weaker (1 MiB, t=2, p=1).
+
+  The Argon2 engine is hash-wasm, not argon2-browser: argon2-browser resolves its WASM by URL
+  and dies outside a browser, which left every Argon2 path untestable under `node --test`.
+
+  **Do not "convert" the memory argument in `deriveArgon2Key`.** kdbxweb passes KiB and
+  hash-wasm expects KiB. Dividing by 1024 runs Argon2 on 32 KiB instead of 32 MiB — a
+  thousandfold weakening that still encrypts, decrypts and round-trips, with the header still
+  advertising 32 MiB because the header is written independently of what the KDF consumed. The
+  pinned-key test in `kdbx.test.ts` is the only thing that catches it; keep it.
+
+  ponytail: kdbxweb's `setVersion` takes only a major version, so we write KDBX 4.0 while
+  kotpass writes 4.1. Both libraries read both. Upgrade path is kdbxweb minor-version support.
+  Also untested: opening a genuine kotpass-written file. The KyAuth fixture in `kdbx.test.ts`
+  is built with kdbxweb, so it proves our credential handling, not cross-library compatibility.
 - `frontend/src/lib/csvImport.ts`: zero-knowledge RFC 4180 CSV parser and multi-format importer supporting
   Google Chrome, 1Password, Bitwarden, LastPass, DashPass (Dashlane), and generic CSV formats. Provider
   folder values are split on `/` and `\` into nested KeePass groups, reusing existing groups by path;

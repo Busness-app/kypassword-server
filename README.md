@@ -11,9 +11,20 @@ your passwords, and it holds nothing that could be used to authenticate as you.
 **There is no local login.** Signing in to KyPassword means signing in to KySignOn; the
 server has no password of its own to check, and no way to create an account.
 
-If KySignOn is unavailable, sign-in is unavailable. Your passwords are not: `GET
-/api/vault/kdbx` returns a standard KDBX v4 file that opens in KeePass, KeePassXC,
-KeePassDX or any other client. That is the documented outage path — keep a copy.
+If KySignOn is unavailable, sign-in is unavailable. Your passwords are not — but the escape
+hatch only works if you prepare it in advance:
+
+1. In **Security → Offline Vault Key**, reveal your vault key and print it. It is a
+   64-character hexadecimal string.
+2. Keep a downloaded copy of your vault (**Download .kdbx**, or `GET /api/vault/kdbx`).
+
+That file is a standard KDBX v4 database, and the vault key *is* its password — type or
+paste it into KeePass, KeePassXC or KeePassDX and your passwords are there, with no server
+involved. Both steps matter: the server cannot show you the key while it is down.
+
+Treat the vault key like the paper recovery code. It unlocks everything, on any device,
+forever, and unlike your master password it cannot be changed without re-encrypting the
+vault.
 
 Two secrets, doing different jobs:
 
