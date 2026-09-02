@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -40,12 +39,13 @@ type Entry struct {
 
 // Store manages the append-only audit trail file.
 type Store struct {
-	mu       sync.Mutex
-	filePath string
-	key      []byte
-	anchor   int64
-	lastHash string
-	count    int64
+	mu        sync.Mutex
+	filePath  string
+	statePath string
+	key       []byte
+	state     chainState
+	lastHash  string
+	count     int64
 }
 
 // chainHash is the digest binding an entry to its predecessor. It is the single
@@ -70,27 +70,56 @@ func (s *Store) chainHash(e Entry) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-// loadAnchor returns the first index required to be keyed, recording it on first
-// use, and reports whether this call is the one that recorded it. It lives beside
-// the key, not beside the log: an attacker who could edit it could simply declare
-// the whole chain unkeyed and forge it freely.
-func loadAnchor(keyDir string, legacyLead int64) (int64, bool, error) {
-	anchorFile := filepath.Join(keyDir, "audit.anchor")
-	if data, err := os.ReadFile(anchorFile); err == nil {
-		n, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
-		if err != nil {
-			return 0, false, fmt.Errorf("audit anchor file is corrupt: %w", err)
+// chainState is what the log is expected to contain, held beside the key rather
+// than beside the log. Hashes alone cannot detect a log that has had records
+// removed, because what remains still chains correctly; only a record kept out of
+// the attacker's reach can.
+type chainState struct {
+	// Anchor is the first index required to be keyed.
+	Anchor int64 `json:"anchor"`
+	// Count is how many entries the log had when last written, and Hash is the
+	// hash of entry Count-1.
+	Count int64  `json:"count"`
+	Hash  string `json:"hash,omitempty"`
+}
+
+// loadState reads the chain state, creating it on first use, and reports whether
+// this call is the one that created it.
+func loadState(keyDir string, legacyLead int64) (chainState, bool, error) {
+	statePath := filepath.Join(keyDir, "audit.state")
+	if data, err := os.ReadFile(statePath); err == nil {
+		var st chainState
+		if err := json.Unmarshal(data, &st); err != nil {
+			return chainState{}, false, fmt.Errorf("audit state file is corrupt: %w", err)
 		}
-		return n, false, nil
+		return st, false, nil
 	}
 
 	if err := os.MkdirAll(keyDir, 0700); err != nil {
-		return 0, false, fmt.Errorf("mkdir key dir: %w", err)
+		return chainState{}, false, fmt.Errorf("mkdir key dir: %w", err)
 	}
-	if err := os.WriteFile(anchorFile, []byte(strconv.FormatInt(legacyLead, 10)), 0600); err != nil {
-		return 0, false, fmt.Errorf("write audit anchor: %w", err)
+	st := chainState{Anchor: legacyLead}
+	if err := writeState(statePath, st); err != nil {
+		return chainState{}, false, err
 	}
-	return legacyLead, true, nil
+	return st, true, nil
+}
+
+func writeState(statePath string, st chainState) error {
+	data, err := json.Marshal(st)
+	if err != nil {
+		return err
+	}
+	// Rename so a crash mid-write cannot leave a state file that reads as "the
+	// log should be empty".
+	tmp := statePath + ".tmp"
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
+		return fmt.Errorf("write audit state: %w", err)
+	}
+	if err := os.Rename(tmp, statePath); err != nil {
+		return fmt.Errorf("replace audit state: %w", err)
+	}
+	return nil
 }
 
 // decodeKey parses a hex-encoded audit key, refusing anything too short to be
@@ -176,11 +205,12 @@ func NewStore(dir, keyDir string) (*Store, error) {
 		}
 	}
 
-	anchor, firstKeying, err := loadAnchor(keyDir, legacyLead)
+	state, firstKeying, err := loadState(keyDir, legacyLead)
 	if err != nil {
 		return nil, err
 	}
-	s.anchor = anchor
+	s.state = state
+	s.statePath = filepath.Join(keyDir, "audit.state")
 
 	// An unkeyed chain being opened for the first time since keying has just been
 	// migrated. Anchor its tail with a keyed entry now, rather than leaving it
@@ -235,6 +265,16 @@ func (s *Store) Log(action, userID, deviceID, ip, details string) (Entry, error)
 	s.lastHash = entry.Hash
 	s.count++
 
+	// Never lower the recorded count: if the log was rolled back and is now being
+	// appended to again, the old mark is the evidence.
+	if s.count > s.state.Count {
+		s.state.Count = s.count
+		s.state.Hash = entry.Hash
+		if err := writeState(s.statePath, s.state); err != nil {
+			return Entry{}, fmt.Errorf("record audit chain state: %w", err)
+		}
+	}
+
 	return entry, nil
 }
 
@@ -281,6 +321,9 @@ func (s *Store) VerifyIntegrity() (bool, error) {
 
 	file, err := os.Open(s.filePath)
 	if os.IsNotExist(err) {
+		if s.state.Count > 0 {
+			return false, fmt.Errorf("audit log is missing, but %d entries were recorded", s.state.Count)
+		}
 		return true, nil
 	}
 	if err != nil {
@@ -291,6 +334,7 @@ func (s *Store) VerifyIntegrity() (bool, error) {
 	dec := json.NewDecoder(file)
 	expectedPrev := genesisHash
 	var expectedIndex int64 = 0
+	tailHash := ""
 
 	for {
 		var e Entry
@@ -304,8 +348,8 @@ func (s *Store) VerifyIntegrity() (bool, error) {
 		if e.PrevHash != expectedPrev {
 			return false, fmt.Errorf("audit chain broken at index %d: prevHash mismatch", e.Index)
 		}
-		if e.V == 0 && e.Index >= s.anchor {
-			return false, fmt.Errorf("audit entry %d is unkeyed but the chain has been keyed since index %d", e.Index, s.anchor)
+		if e.V == 0 && e.Index >= s.state.Anchor {
+			return false, fmt.Errorf("audit entry %d is unkeyed but the chain has been keyed since index %d", e.Index, s.state.Anchor)
 		}
 
 		calcHash := s.chainHash(e)
@@ -313,14 +357,20 @@ func (s *Store) VerifyIntegrity() (bool, error) {
 			return false, fmt.Errorf("audit entry %d hash modified: got %s, calculated %s", e.Index, e.Hash, calcHash)
 		}
 
+		if e.Index == s.state.Count-1 {
+			tailHash = e.Hash
+		}
 		expectedPrev = e.Hash
 		expectedIndex++
 	}
 
-	// Keying wrote an entry at the anchor index. If it is gone, the log has been
-	// rolled back to the unkeyed records an attacker can still forge.
-	if s.anchor > 0 && expectedIndex <= s.anchor {
-		return false, fmt.Errorf("audit chain truncated: %d entries, expected the keyed entry at index %d", expectedIndex, s.anchor)
+	// A truncated log still chains correctly, so the tail is checked against the
+	// state record the log's writer cannot reach. A log missing entries never
+	// reaches the recorded index and fails here with tailHash empty. A log with
+	// more entries than the mark is fine: an interrupted write can leave the mark
+	// one behind, and the entries past it are still required to be keyed.
+	if s.state.Count > 0 && tailHash != s.state.Hash {
+		return false, fmt.Errorf("audit chain does not match the recorded state: entry %d is missing or altered", s.state.Count-1)
 	}
 
 	return true, nil
