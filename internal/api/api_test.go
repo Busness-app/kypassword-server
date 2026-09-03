@@ -7,9 +7,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Busness-app/kypassword-server/internal/sso"
@@ -36,6 +39,14 @@ func newTestServerWithUsers(t *testing.T, usersJSON string) *Server {
 		}
 	}
 
+	srv, _ := newServerIn(t, dir)
+	return srv
+}
+
+// newServerIn builds a server rooted at dir and hands back its data directory, which
+// the tests that have to break the audit log need in order to find it.
+func newServerIn(t *testing.T, dir string) (*Server, string) {
+	t.Helper()
 	srv, err := NewServer(Config{
 		DataDir:       dir + "/data",
 		ConfigDir:     dir + "/config",
@@ -45,7 +56,7 @@ func newTestServerWithUsers(t *testing.T, usersJSON string) *Server {
 	if err != nil {
 		t.Fatalf("NewServer failed: %v", err)
 	}
-	return srv
+	return srv, dir + "/data"
 }
 
 // signedInUser provisions an account the way KySignOn would and returns it with a session
@@ -316,10 +327,9 @@ func TestAuditLogIntegrity(t *testing.T) {
 }
 
 // A client that hangs up after the handler has already acted must not take its audit
-// record with it. r.Context() dies the instant the connection does, every Log call
-// site discards the error, and handlers log last — so honouring that cancellation
-// meant an aborted request left no trace at all, with the same HTTP status and a
-// chain that still verified clean.
+// record with it. r.Context() dies the instant the connection does and handlers log
+// last, so honouring that cancellation meant an aborted request left no trace at all,
+// with the same HTTP status and a chain that still verified clean.
 func TestAbortedRequestStillRecordsTheAudit(t *testing.T) {
 	srv := newTestServer(t)
 	_, cookie := signedInUser(t, srv, "admin", users.RoleAdmin)
@@ -349,5 +359,59 @@ func TestAbortedRequestStillRecordsTheAudit(t *testing.T) {
 	}
 	if ok, err := srv.audit.VerifyIntegrity(); !ok || err != nil {
 		t.Fatalf("audit chain does not verify: ok=%v, err=%v", ok, err)
+	}
+}
+
+// A failed audit write must not vanish. This is a password vault: an instance that
+// keeps accepting privileged operations while recording none of them is the state an
+// attacker wants it in, and until now every call site discarded the error, so nothing
+// said a word until a later restart refused to boot.
+//
+// The request still succeeds. The operation it is recording has already happened, so a
+// 500 would not undo it — it would ask the client to retry something the server has
+// already done, and the retry would be just as unrecorded. What changes is that the
+// failure is logged and the instance stops reporting healthy, so the container
+// healthcheck stops sending it work.
+func TestFailedAuditWriteDegradesHealth(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes into a read-only directory whatever its mode says")
+	}
+	srv, dataDir := newServerIn(t, t.TempDir())
+	_, cookie := signedInUser(t, srv, "dana", users.RoleAdmin)
+	handler := srv.Routes()
+
+	health := func() int {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/health", nil))
+		return rec.Code
+	}
+	if code := health(); code != http.StatusOK {
+		t.Fatalf("GET /api/health = %d with a working audit log, want 200", code)
+	}
+
+	// A read-only log volume, which is one of the ways this actually happens. The log
+	// file has not been created yet, so the append is what fails.
+	auditDir := filepath.Join(dataDir, "audit")
+	if err := os.Chmod(auditDir, 0500); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(auditDir, 0700) })
+
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/logout", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /api/auth/logout = %d; the logout happened, so the client must not be told to retry it", rec.Code)
+	}
+	if !strings.Contains(logs.String(), "AUDIT WRITE FAILED") || !strings.Contains(logs.String(), "auth.logout") {
+		t.Fatalf("a failed audit write left no line an operator could see: %q", logs.String())
+	}
+	if code := health(); code != http.StatusServiceUnavailable {
+		t.Fatalf("GET /api/health = %d after an audit write failed, want 503", code)
 	}
 }

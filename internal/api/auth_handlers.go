@@ -179,7 +179,7 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "failed to link account: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-		_, _ = s.audit.Log(r.Context(), "auth.sso_linked", linkUserID, "", clientIP(r), "linked SSO subject "+claims.Sub)
+		s.record(r, "auth.sso_linked", linkUserID, "", clientIP(r), "linked SSO subject "+claims.Sub)
 		http.Redirect(w, r, "/#sso=linked", http.StatusFound)
 		return
 	}
@@ -220,7 +220,7 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		user = createdUser
-		_, _ = s.audit.Log(r.Context(), "auth.sso_provisioned", user.ID, "", clientIP(r), "auto-provisioned user via SSO")
+		s.record(r, "auth.sso_provisioned", user.ID, "", clientIP(r), "auto-provisioned user via SSO")
 	}
 
 	if !user.Active {
@@ -233,7 +233,7 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, _ = s.audit.Log(r.Context(), "auth.sso_login", user.ID, "", clientIP(r), "signed in via SSO")
+	s.record(r, "auth.sso_login", user.ID, "", clientIP(r), "signed in via SSO")
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 
@@ -261,13 +261,23 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request, u users.Us
 		MaxAge:   -1,
 	})
 
-	_, _ = s.audit.Log(r.Context(), "auth.logout", u.ID, "", clientIP(r), "logged out")
+	s.record(r, "auth.logout", u.ID, "", clientIP(r), "logged out")
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+// handleHealth is what the container healthcheck polls. It reports unhealthy once an
+// audit write has failed: the vault still works, but it is no longer recording what it
+// does, and that is a state to be pulled out of rotation rather than served from.
+//
+// Why the reason is not in the body: this endpoint is unauthenticated, and "the audit
+// log is broken" is not something to hand an attacker. The reason is in the server log.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status":  "ok",
+	status, code := "ok", http.StatusOK
+	if s.auditFailures.Load() > 0 {
+		status, code = "degraded", http.StatusServiceUnavailable
+	}
+	writeJSON(w, code, map[string]any{
+		"status":  status,
 		"service": "kypassword-server",
 		"time":    time.Now().UTC().Format(time.RFC3339),
 	})

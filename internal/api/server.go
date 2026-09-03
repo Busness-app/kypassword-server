@@ -5,9 +5,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Busness-app/kypassword-server/internal/audit"
@@ -31,6 +33,11 @@ type Server struct {
 	audit         *audit.Store
 	ssoStore      *sso.Store
 	pairingSecret string
+
+	// auditFailures counts audit writes that did not reach the log. Sticky: the
+	// missing record never comes back, so only a restart — after someone has
+	// looked — clears it.
+	auditFailures atomic.Int64
 
 	sessMu   sync.RWMutex
 	sessions map[string]Session // token -> Session
@@ -157,6 +164,30 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// record writes an audit entry and makes a failed write impossible to miss.
+//
+// It does not fail the request. Every call site records an operation the server has
+// already carried out, so a 500 would not undo it — it would ask the client to retry
+// something that already happened, and the retry would be just as unrecorded. Several
+// call sites record a rejection — sync.rejected, device.pairing_failed — where a 500
+// would turn "you are not authorised" into "the server is broken" and tell an attacker
+// the log is down.
+//
+// What a lost record does change is whether this instance should still be taking
+// traffic. The failure is logged for the operator and counted, and GET /api/health
+// answers 503 from then on, so the container healthcheck and anything in front of it
+// stop sending work to a vault that is not recording what it does.
+// TestFailedAuditWriteDegradesHealth pins all three: the status the client sees, the
+// line the operator sees, and the health the healthcheck sees.
+func (s *Server) record(r *http.Request, action, userID, deviceID, ip, details string) {
+	if _, err := s.audit.Log(r.Context(), action, userID, deviceID, ip, details); err != nil {
+		s.auditFailures.Add(1)
+		// details is left out on purpose: it carries operation content, and both the
+		// audit records and these logs are content-blind.
+		log.Printf("AUDIT WRITE FAILED action=%s user=%s device=%s ip=%s: %v", action, userID, deviceID, ip, err)
+	}
 }
 
 // writeJSON formats and sends a JSON response.

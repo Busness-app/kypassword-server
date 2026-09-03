@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -145,9 +146,25 @@ func writeState(statePath string, st chainState) error {
 		return err
 	}
 	// Rename so a crash mid-write cannot leave a state file that reads as "the
-	// log should be empty".
+	// log should be empty", and flush the bytes before the rename that publishes
+	// them: a rename that reaches the disk ahead of its own contents leaves a mark
+	// that does not parse, and loadState refuses to start on one. The rename is not
+	// itself flushed — losing it leaves the previous mark, which is the direction
+	// placeTail already reconciles.
 	tmp := statePath + ".tmp"
-	if err := os.WriteFile(tmp, data, 0600); err != nil {
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
+	if err != nil {
+		return fmt.Errorf("write audit state: %w", err)
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return fmt.Errorf("write audit state: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return fmt.Errorf("flush audit state: %w", err)
+	}
+	if err := f.Close(); err != nil {
 		return fmt.Errorf("write audit state: %w", err)
 	}
 	if err := os.Rename(tmp, statePath); err != nil {
@@ -203,11 +220,12 @@ func NewStore(dir, keyDir string) (*Store, error) {
 	}
 	s.anchor = auditchain.Anchor{Count: st.Count, Hash: st.Hash}
 
-	entries, err := s.readAll()
+	entries, end, err := s.readAll()
 	if err != nil {
 		return nil, err
 	}
-	if entries, err = s.converge(entries, st); err != nil {
+	entries, rewrote, err := s.converge(entries, st)
+	if err != nil {
 		return nil, err
 	}
 
@@ -218,6 +236,14 @@ func NewStore(dir, keyDir string) (*Store, error) {
 	anchor, err := s.placeTail(entries)
 	if err != nil {
 		return nil, err
+	}
+
+	// converge rewrites the whole file when it runs, so end describes a file that no
+	// longer exists and there is nothing left to trim.
+	if !rewrote {
+		if err := s.trimTornTail(end); err != nil {
+			return nil, err
+		}
 	}
 
 	if len(entries) == 0 {
@@ -308,18 +334,21 @@ func (s *Store) placeTail(entries []Entry) (auditchain.Anchor, error) {
 	return s.anchor, nil
 }
 
-// readAll returns the log oldest first, or nothing if it does not exist yet.
-func (s *Store) readAll() ([]Entry, error) {
+// readAll returns the log oldest first, or nothing if it does not exist yet, along with
+// the offset just past the last record it could decode. Anything after that offset is
+// what the decoder stopped at; trimTornTail is what removes it.
+func (s *Store) readAll() ([]Entry, int64, error) {
 	file, err := os.Open(s.filePath)
 	if os.IsNotExist(err) {
-		return nil, nil
+		return nil, 0, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer file.Close()
 
 	var entries []Entry
+	var end int64
 	dec := json.NewDecoder(file)
 	for {
 		var e Entry
@@ -327,8 +356,58 @@ func (s *Store) readAll() ([]Entry, error) {
 			break
 		}
 		entries = append(entries, e)
+		end = dec.InputOffset()
 	}
-	return entries, nil
+	return entries, end, nil
+}
+
+// trimTornTail drops the bytes past the last record the reader could decode.
+//
+// A record and its newline are written in one call, and a crash or a full disk can cut
+// that call in half. The reader stops at the fragment, so the next append lands behind
+// it and every record after that is unreadable — the log is lost from the tear onward
+// while every check still passes. Removing the fragment costs nothing: it is bytes no
+// check consults, past the mark, and past the last record placeTail counted.
+//
+// It runs after placeTail, never before. A log placeTail refuses is evidence for the
+// operator, and editing evidence is not this function's job. TestTornTailIsRepaired
+// covers the crash that leaves a fragment behind.
+func (s *Store) trimTornTail(end int64) error {
+	fi, err := os.Stat(s.filePath)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if fi.Size() <= end {
+		return nil
+	}
+
+	f, err := os.OpenFile(s.filePath, os.O_RDWR, 0600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	// The record's newline went out in the same write as the record, so when anything
+	// follows the last complete record, that newline is the first byte past it. Keep it.
+	clean := end
+	var nl [1]byte
+	if _, err := f.ReadAt(nl[:], end); err != nil {
+		return err
+	}
+	if nl[0] == '\n' {
+		clean++
+	}
+	if fi.Size() == clean {
+		return nil
+	}
+	if err := f.Truncate(clean); err != nil {
+		return err
+	}
+	log.Printf("audit: dropped %d bytes of an incomplete trailing record from %s", fi.Size()-clean, s.filePath)
+	return f.Sync()
 }
 
 // saveAnchor persists the anchor beside the key.
@@ -355,21 +434,21 @@ func (s *Store) saveAnchor() error {
 // When conversion is refused the log is left exactly as it is: if the mark counts more
 // than the log holds placeTail refuses, if it counts none placeTail refuses, and otherwise
 // the entries are still in the old format, so Resume's digest check is what rejects them.
-func (s *Store) converge(entries []Entry, st chainState) ([]Entry, error) {
+func (s *Store) converge(entries []Entry, st chainState) ([]Entry, bool, error) {
 	if len(entries) == 0 {
-		return entries, nil
+		return entries, false, nil
 	}
 	// Is this log already in the shared digest format? That is all this asks.
 	// Resume would also assert that the record is the tail, which is a different
 	// question and not the one converge needs answered.
 	if auditchain.VerifyRecord(s.key, recordOf(entries[len(entries)-1])) == nil {
-		return entries, nil
+		return entries, false, nil
 	}
 	if st.Count != uint64(len(entries)) || st.Hash != entries[len(entries)-1].Hash {
-		return entries, nil
+		return entries, false, nil
 	}
 	if !s.legacyChainVerifies(entries) {
-		return entries, nil
+		return entries, false, nil
 	}
 
 	// Replay, not a per-record Append: the log is written once after the loop and
@@ -381,7 +460,7 @@ func (s *Store) converge(entries []Entry, st chainState) ([]Entry, error) {
 	}
 	records, anchor, err := auditchain.Replay(s.key, tuples)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	converted := make([]Entry, 0, len(entries))
 	for i, e := range entries {
@@ -390,13 +469,13 @@ func (s *Store) converge(entries []Entry, st chainState) ([]Entry, error) {
 	}
 
 	if err := s.rewrite(converted); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	s.anchor = anchor
 	if err := s.saveAnchor(); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return converted, nil
+	return converted, true, nil
 }
 
 // legacyChainVerifies reports whether every entry carries the keyed digest the
@@ -438,12 +517,16 @@ func (s *Store) rewrite(entries []Entry) error {
 // Log records an audit action in the hash-chain.
 //
 // ctx is accepted for its values; its cancellation is deliberately dropped. Handlers
-// pass r.Context(), which dies the instant the client hangs up, and every call site
-// discards Log's error — so honouring it would let a client suppress the record of
-// what it just did by aborting the connection after the handler had already acted.
-// The records an attacking client most wants gone, device.pairing_failed and
-// sync.rejected, are exactly the ones written that way. The audit write is not the
-// caller's to cancel; TestAbortedRequestStillRecordsTheAudit pins it.
+// pass r.Context(), which dies the instant the client hangs up, and by then the handler
+// has already acted — so honouring it would let a client suppress the record of what it
+// just did by aborting the connection. The records an attacking client most wants gone,
+// device.pairing_failed and sync.rejected, are exactly the ones written that way. The
+// audit write is not the caller's to cancel; TestAbortedRequestStillRecordsTheAudit
+// pins it.
+//
+// The error is the caller's to report, not to drop: api.Server.record counts it and
+// takes the instance out of health, because a vault that cannot record what it does
+// should not be quietly taking traffic.
 func (s *Store) Log(ctx context.Context, action, userID, deviceID, ip, details string) (Entry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -479,8 +562,37 @@ func (s *Store) Log(ctx context.Context, action, userID, deviceID, ip, details s
 		if err != nil {
 			return err
 		}
-		defer f.Close()
+		fi, err := f.Stat()
+		if err != nil {
+			f.Close()
+			return err
+		}
 		if _, err := f.Write(data); err != nil {
+			// A short write — a full disk is the usual one — leaves half a line that
+			// the reader stops at and the next append lands behind, losing the log
+			// from there on. Put the file back where this record found it. The chain
+			// rolls this record back too, so the sequence number is reused rather
+			// than skipped. TestShortWriteLeavesNoTornLine covers it.
+			if terr := f.Truncate(fi.Size()); terr != nil {
+				err = errors.Join(err, terr)
+			}
+			f.Close()
+			return err
+		}
+		// Flush the record before the mark that counts it. The two files are only
+		// ordered on disk if this call is here: without it a crash can land the mark
+		// first, and the next start finds fewer records than the mark counts and
+		// refuses to boot — an ordinary power loss reported to the operator as
+		// tampering. It buys that at one fsync per audited request; see CHANGELOG.md.
+		//
+		// Unproven here: exposing the wrong order takes a crash between the two
+		// writes, which no test in this package can stage. What is claimed is the
+		// syscall, not a test.
+		if err := f.Sync(); err != nil {
+			f.Close()
+			return err
+		}
+		if err := f.Close(); err != nil {
 			return err
 		}
 
@@ -587,7 +699,7 @@ func (s *Store) ExportChain(w io.Writer) (auditchain.Anchor, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	entries, err := s.readAll()
+	entries, _, err := s.readAll()
 	if err != nil {
 		return auditchain.Anchor{}, err
 	}

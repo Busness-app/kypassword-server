@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -722,26 +723,9 @@ func TestChainIsDrivenFromOneCallSite(t *testing.T) {
 // evidence. Every Test... identifier mentioned in this package's non-test source must
 // name a test that exists somewhere in the repository.
 func TestCommentsNameRealTests(t *testing.T) {
-	defined := map[string]bool{}
+	defined := definedTests(t)
 	var cited []string
 	name := regexp.MustCompile(`\bTest[A-Z]\w*`)
-
-	err := filepath.WalkDir("../..", func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") {
-			return err
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		for _, m := range regexp.MustCompile(`func (Test[A-Z]\w*)\(`).FindAllStringSubmatch(string(data), -1) {
-			defined[m[1]] = true
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("WalkDir failed: %v", err)
-	}
 
 	files, err := filepath.Glob("*.go")
 	if err != nil {
@@ -867,5 +851,184 @@ func TestLegacyLogIsNotConvergedAgainstAMismatchedMark(t *testing.T) {
 	}
 	if got := readChain(t, dir); got[2].Hash != entries[2].Hash {
 		t.Fatal("the log was rewritten even though conversion was refused")
+	}
+}
+
+// definedTests collects every test function the repository actually defines.
+//
+// The pattern is anchored to the start of a line. A Go test function can only be
+// declared at column zero, and without the anchor a commented-out "// func TestX(" was
+// a definition as far as this map was concerned — so a comment citing a test that had
+// been written, deleted and left behind as a comment satisfied the guard that exists
+// precisely to catch that. TestCommentedOutDefinitionDoesNotCount holds it.
+func definedTests(t *testing.T) map[string]bool {
+	t.Helper()
+	decl := regexp.MustCompile(`(?m)^func (Test[A-Z]\w*)\(`)
+	defined := map[string]bool{}
+	err := filepath.WalkDir("../..", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for _, m := range decl.FindAllStringSubmatch(string(data), -1) {
+			defined[m[1]] = true
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WalkDir failed: %v", err)
+	}
+	return defined
+}
+
+// The fixture for the test below, and the thing the guard used to accept: a definition
+// that is not one.
+//
+// func TestSomethingThatDoesNotExist(t *testing.T) {}
+//
+// It sits in a test file because TestCommentsNameRealTests only reads comments in
+// non-test sources; here it is a fixture, there it would be a citation.
+func TestCommentedOutDefinitionDoesNotCount(t *testing.T) {
+	const commented = "TestSomethingThatDoesNotExist"
+	defined := definedTests(t)
+	if defined[commented] {
+		t.Fatalf("a commented-out func %s( counted as a definition, so a comment citing it would pass the guard", commented)
+	}
+
+	// The other half: the guard flags a cited name it cannot find, and this is the
+	// name it would flag.
+	name := regexp.MustCompile(`\bTest[A-Z]\w*`)
+	cited := name.FindAllString("// as "+commented+" shows", -1)
+	if len(cited) != 1 || cited[0] != commented {
+		t.Fatalf("the citation pattern read %v out of a comment naming %s", cited, commented)
+	}
+	if defined[cited[0]] {
+		t.Fatalf("%s is cited and treated as defined; the guard would stay silent", cited[0])
+	}
+}
+
+// AUDIT_KEY is the documented way to keep the audit key out of the config volume, and
+// nothing in this repo exercised it: what it accepts, and at what length, was unproven
+// here. keyfile.FromEnv takes hex or standard base64 and requires exactly keyBytes.
+//
+// The exact length is deliberate and stays. A key longer than the one asked for is a
+// key half of which is being silently discarded, and two installs disagreeing about
+// how much of it counts cannot read each other's chains.
+func TestAuditKeyFromEnv(t *testing.T) {
+	key := bytes.Repeat([]byte{0xab}, keyBytes)
+
+	for _, tc := range []struct{ name, value string }{
+		{"hex", hex.EncodeToString(key)},
+		{"hex with surrounding whitespace", "  " + hex.EncodeToString(key) + "\n"},
+		{"base64", base64.StdEncoding.EncodeToString(key)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, keyDir := t.TempDir(), t.TempDir()
+			t.Setenv("AUDIT_KEY", tc.value)
+
+			store, err := NewStore(dir, keyDir)
+			if err != nil {
+				t.Fatalf("NewStore refused AUDIT_KEY as %s: %v", tc.name, err)
+			}
+			if !bytes.Equal(store.key, key) {
+				t.Fatalf("chain key = %x, want the value of AUDIT_KEY", store.key)
+			}
+			if _, err := os.Stat(filepath.Join(keyDir, "audit.key")); !os.IsNotExist(err) {
+				t.Fatalf("a key file was minted while AUDIT_KEY was set (stat err %v); the operator's key is not the one in use", err)
+			}
+			if _, err := store.Log(t.Context(), "auth.login", "user1", "dev1", "127.0.0.1", "signed in"); err != nil {
+				t.Fatalf("Log under an env key failed: %v", err)
+			}
+			if ok, err := store.VerifyIntegrity(); err != nil || !ok {
+				t.Fatalf("VerifyIntegrity under an env key: ok=%v err=%v", ok, err)
+			}
+		})
+	}
+
+	for _, tc := range []struct{ name, value string }{
+		{"one byte short", hex.EncodeToString(key[:keyBytes-1])},
+		{"twice as long", hex.EncodeToString(bytes.Repeat(key, 2))},
+		{"not hex or base64", "hunter2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, keyDir := t.TempDir(), t.TempDir()
+			t.Setenv("AUDIT_KEY", tc.value)
+
+			_, err := NewStore(dir, keyDir)
+			if err == nil {
+				t.Fatalf("NewStore started on an AUDIT_KEY that is %s", tc.name)
+			}
+			if !strings.Contains(err.Error(), "AUDIT_KEY") {
+				t.Fatalf("the refusal does not name the variable the operator has to fix: %v", err)
+			}
+			if _, statErr := os.Stat(filepath.Join(keyDir, "audit.key")); !os.IsNotExist(statErr) {
+				t.Fatalf("a key was generated behind a rejected AUDIT_KEY (stat err %v)", statErr)
+			}
+		})
+	}
+}
+
+// A crash between a record's write and its flush leaves half a line on the end. The
+// reader stops there, so the next append lands behind the fragment and every record
+// after it is unreadable — the log lost from that point on, with every check still
+// passing and nothing said.
+func TestTornTailIsRepaired(t *testing.T) {
+	dir, keyDir := t.TempDir(), t.TempDir()
+	loggedStore(t, dir, keyDir, 3)
+
+	logPath := filepath.Join(dir, "audit.jsonl")
+	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+	if _, err := f.WriteString(`{"index":3,"timestamp":"2026-09-0`); err != nil {
+		t.Fatalf("WriteString: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	store, err := NewStore(dir, keyDir)
+	if err != nil {
+		t.Fatalf("NewStore refused a log with a torn tail: %v", err)
+	}
+	if _, err := store.Log(t.Context(), "auth.login", "user1", "dev1", "127.0.0.1", "after the tear"); err != nil {
+		t.Fatalf("Log after a torn tail failed: %v", err)
+	}
+	entries, err := store.List(10)
+	if err != nil || len(entries) != 4 {
+		t.Fatalf("List returned %d entries, want 4 (err %v); the log is unreadable past the tear", len(entries), err)
+	}
+	if ok, err := store.VerifyIntegrity(); err != nil || !ok {
+		t.Fatalf("VerifyIntegrity after a repaired tail: ok=%v err=%v", ok, err)
+	}
+}
+
+// A mark that does not parse is refused, not replaced. It is one of the boot refusals
+// CHANGELOG.md tells operators about, and it is also what a rename that reached the disk
+// ahead of its own contents would leave — writeState flushes before the rename for that
+// reason.
+func TestCorruptMarkRefusesToStart(t *testing.T) {
+	dir, keyDir := t.TempDir(), t.TempDir()
+	loggedStore(t, dir, keyDir, 2)
+
+	statePath := filepath.Join(keyDir, "audit.state")
+	if err := os.WriteFile(statePath, []byte(`{"count":2,"ha`), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := NewStore(dir, keyDir)
+	if err == nil {
+		t.Fatal("NewStore started on a mark it could not parse")
+	}
+	if !strings.Contains(err.Error(), "corrupt") {
+		t.Fatalf("the refusal does not say what is wrong with the mark: %v", err)
+	}
+	after, readErr := os.ReadFile(statePath)
+	if readErr != nil || string(after) != `{"count":2,"ha` {
+		t.Fatalf("the corrupt mark was rewritten (%q, err %v)", after, readErr)
 	}
 }

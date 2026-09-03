@@ -37,7 +37,7 @@ func (s *Server) handleAdminUserRole(w http.ResponseWriter, r *http.Request, adm
 		return
 	}
 
-	_, _ = s.audit.Log(r.Context(), "admin.user_role_updated", admin.ID, "", clientIP(r), "updated role for user "+id)
+	s.record(r, "admin.user_role_updated", admin.ID, "", clientIP(r), "updated role for user "+id)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -47,7 +47,7 @@ func (s *Server) handleAdminUserDeactivate(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "failed to deactivate user: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	_, _ = s.audit.Log(r.Context(), "admin.user_deactivated", admin.ID, "", clientIP(r), "deactivated user "+id)
+	s.record(r, "admin.user_deactivated", admin.ID, "", clientIP(r), "deactivated user "+id)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -57,7 +57,7 @@ func (s *Server) handleAdminUserReactivate(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "failed to reactivate user: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	_, _ = s.audit.Log(r.Context(), "admin.user_reactivated", admin.ID, "", clientIP(r), "reactivated user "+id)
+	s.record(r, "admin.user_reactivated", admin.ID, "", clientIP(r), "reactivated user "+id)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -70,7 +70,7 @@ func (s *Server) handleAdminSSOPut(w http.ResponseWriter, r *http.Request, admin
 	// Refuse rather than accept a write the next restart discards. Silently taking a
 	// change that does not survive is worse than saying no.
 	if s.ssoStore.EnvSourced() {
-		_, _ = s.audit.Log(r.Context(), "admin.sso_write_refused", admin.ID, "", clientIP(r), "SSO is configured by the environment")
+		s.record(r, "admin.sso_write_refused", admin.ID, "", clientIP(r), "SSO is configured by the environment")
 		http.Error(w, "SSO is configured by the environment ("+sso.EnvIssuer+", "+sso.EnvClientID+", "+sso.EnvClientSecret+") and cannot be changed here. Edit the environment and restart.", http.StatusConflict)
 		return
 	}
@@ -86,7 +86,7 @@ func (s *Server) handleAdminSSOPut(w http.ResponseWriter, r *http.Request, admin
 		return
 	}
 
-	_, _ = s.audit.Log(r.Context(), "admin.sso_configured", admin.ID, "", clientIP(r), "updated SSO configuration")
+	s.record(r, "admin.sso_configured", admin.ID, "", clientIP(r), "updated SSO configuration")
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "settings": req})
 }
 

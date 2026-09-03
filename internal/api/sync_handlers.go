@@ -106,19 +106,19 @@ func (s *Server) handleSyncWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !authorized {
-		_, _ = s.audit.Log(r.Context(), "sync.rejected", "", "", clientIP(r), "replication request failed authentication")
+		s.record(r, "sync.rejected", "", "", clientIP(r), "replication request failed authentication")
 		http.Error(w, "unauthorized sync request", http.StatusUnauthorized)
 		return
 	}
 	if unsigned {
-		_, _ = s.audit.Log(r.Context(), "sync.unsigned", "", "", clientIP(r), "replication request accepted on bearer token with no signature")
+		s.record(r, "sync.unsigned", "", "", clientIP(r), "replication request accepted on bearer token with no signature")
 	}
 
 	event := kysync.EventType(r)
 	switch event {
 	case "user.created", "user.updated", "user.deleted":
 	default:
-		_, _ = s.audit.Log(r.Context(), "sync.bad_event", "", "", clientIP(r), "unrecognised replication event "+strconv.Quote(event))
+		s.record(r, "sync.bad_event", "", "", clientIP(r), "unrecognised replication event "+strconv.Quote(event))
 		http.Error(w, "unrecognised replication event", http.StatusBadRequest)
 		return
 	}
@@ -134,7 +134,7 @@ func (s *Server) handleSyncWebhook(w http.ResponseWriter, r *http.Request) {
 		if existing, errGet := s.users.GetBySSOSub(u.ID); errGet == nil {
 			// KySignOn treats 409 on a create as success, so a retried event settles here
 			// instead of provisioning a second account.
-			_, _ = s.audit.Log(r.Context(), "sync.create_duplicate", existing.ID, "", clientIP(r), "replication re-sent create for subject "+u.ID)
+			s.record(r, "sync.create_duplicate", existing.ID, "", clientIP(r), "replication re-sent create for subject "+u.ID)
 			http.Error(w, "an account already exists for this subject", http.StatusConflict)
 			return
 		}
@@ -143,7 +143,7 @@ func (s *Server) handleSyncWebhook(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "failed to provision account: "+errCreate.Error(), http.StatusInternalServerError)
 			return
 		}
-		_, _ = s.audit.Log(r.Context(), "sync.user_created", created.ID, "", clientIP(r), "provisioned "+created.Username+" from KySignOn")
+		s.record(r, "sync.user_created", created.ID, "", clientIP(r), "provisioned "+created.Username+" from KySignOn")
 
 	case "user.updated":
 		existing, errGet := s.users.GetBySSOSub(u.ID)
@@ -153,7 +153,7 @@ func (s *Server) handleSyncWebhook(w http.ResponseWriter, r *http.Request) {
 			// all, or replication would be a way around that setting. A 404 here is not an
 			// option: KySignOn forgives 404 only on a delete, so it would retry forever.
 			if !s.ssoStore.Load().AutoProvision {
-				_, _ = s.audit.Log(r.Context(), "sync.update_ignored", "", "", clientIP(r), "update for unknown subject "+u.ID+" ignored; auto-provisioning is off")
+				s.record(r, "sync.update_ignored", "", "", clientIP(r), "update for unknown subject "+u.ID+" ignored; auto-provisioning is off")
 				writeJSON(w, http.StatusOK, map[string]any{"ok": true, "provisioned": false})
 				return
 			}
@@ -162,7 +162,7 @@ func (s *Server) handleSyncWebhook(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "failed to provision account: "+errCreate.Error(), http.StatusInternalServerError)
 				return
 			}
-			_, _ = s.audit.Log(r.Context(), "sync.user_created", created.ID, "", clientIP(r), "provisioned "+created.Username+" from a KySignOn update")
+			s.record(r, "sync.user_created", created.ID, "", clientIP(r), "provisioned "+created.Username+" from a KySignOn update")
 			break
 		}
 		if errGet != nil {
@@ -173,7 +173,7 @@ func (s *Server) handleSyncWebhook(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "failed to apply update: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-		_, _ = s.audit.Log(r.Context(), "sync.user_updated", existing.ID, "", clientIP(r), "applied KySignOn update for "+existing.Username)
+		s.record(r, "sync.user_updated", existing.ID, "", clientIP(r), "applied KySignOn update for "+existing.Username)
 
 	case "user.deleted":
 		existing, errGet := s.users.GetBySSOSub(u.ID)
@@ -190,7 +190,7 @@ func (s *Server) handleSyncWebhook(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "failed to deactivate account: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-		_, _ = s.audit.Log(r.Context(), "sync.user_deleted", existing.ID, "", clientIP(r), "deactivated "+existing.Username+" on KySignOn deletion; vault retained")
+		s.record(r, "sync.user_deleted", existing.ID, "", clientIP(r), "deactivated "+existing.Username+" on KySignOn deletion; vault retained")
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})

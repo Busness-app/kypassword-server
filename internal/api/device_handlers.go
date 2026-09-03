@@ -17,7 +17,7 @@ func (s *Server) handlePairingStart(w http.ResponseWriter, r *http.Request, u us
 		return
 	}
 
-	_, _ = s.audit.Log(r.Context(), "device.pairing_initiated", u.ID, "", clientIP(r), "pairing code issued")
+	s.record(r, "device.pairing_initiated", u.ID, "", clientIP(r), "pairing code issued")
 	writeJSON(w, http.StatusOK, map[string]any{
 		"pin":       session.PIN,
 		"secret":    session.Secret,
@@ -42,7 +42,7 @@ func (s *Server) handlePairingRedeem(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
 	dev, err := s.devices.RedeemPairing(req.CodeOrPIN, req.DeviceName, req.Platform, ip)
 	if err != nil {
-		_, _ = s.audit.Log(r.Context(), "device.pairing_failed", "", "", ip, "failed pairing redeem: "+err.Error())
+		s.record(r, "device.pairing_failed", "", "", ip, "failed pairing redeem: "+err.Error())
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -59,7 +59,7 @@ func (s *Server) handlePairingRedeem(w http.ResponseWriter, r *http.Request) {
 	// Mint initial session for device
 	tokBytes, _ := s.startSessionWithToken(dev.UserID)
 
-	_, _ = s.audit.Log(r.Context(), "device.paired", dev.UserID, dev.ID, ip, fmt.Sprintf("paired device %s (%s)", dev.Name, dev.Platform))
+	s.record(r, "device.paired", dev.UserID, dev.ID, ip, fmt.Sprintf("paired device %s (%s)", dev.Name, dev.Platform))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":           true,
 		"deviceId":     dev.ID,
@@ -108,6 +108,6 @@ func (s *Server) handleDeviceRevoke(w http.ResponseWriter, r *http.Request, u us
 	_ = s.devices.Revoke(deviceID)
 	_ = s.vault.RemoveDeviceEnvelope(u.ID, deviceID)
 
-	_, _ = s.audit.Log(r.Context(), "device.revoked", u.ID, deviceID, clientIP(r), "revoked device "+dev.Name)
+	s.record(r, "device.revoked", u.ID, deviceID, clientIP(r), "revoked device "+dev.Name)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
