@@ -3,23 +3,28 @@ package audit
 import (
 	"context"
 	"crypto/hmac"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/Busness-app/ky-primitives/auditchain"
+	"github.com/Busness-app/ky-primitives/keyfile"
 )
 
 // genesisHash is the PrevHash of the first entry in a chain.
 const genesisHash = "0000000000000000000000000000000000000000000000000000000000000000"
+
+// keyBytes is the audit HMAC key length. keyfile requires an exact size rather than a
+// floor: "at least 32" let a longer file through, and two installs disagreeing about the
+// length is two installs that cannot read each other's keys.
+const keyBytes = 32
 
 // appendTimeout bounds Append's wait for the chain lock. It does not bound persist,
 // which runs with that lock held and no context reaching it, so a store that hangs
@@ -102,15 +107,26 @@ type chainState struct {
 	Hash  string `json:"hash,omitempty"`
 }
 
-// loadState reads the anchor, creating an empty one on first use.
+// loadState reads the anchor, creating an empty one only when there is none.
+//
+// Only os.ErrNotExist may create. The read used to be `if err == nil { ... }`, so every
+// other failure — a permission error, an I/O error, a directory in its place — fell
+// through and wrote an empty mark over the real one. The rename succeeds whenever keyDir
+// is writable, so the anchor was destroyed, and placeTail then told the operator the mark
+// "was removed and recreated empty, or never written": a description of what this function
+// had just done. TestUnreadableMarkIsNotOverwritten pins it.
 func loadState(keyDir string) (chainState, error) {
 	statePath := filepath.Join(keyDir, "audit.state")
-	if data, err := os.ReadFile(statePath); err == nil {
+	data, err := os.ReadFile(statePath)
+	switch {
+	case err == nil:
 		var st chainState
 		if err := json.Unmarshal(data, &st); err != nil {
 			return chainState{}, fmt.Errorf("audit state file is corrupt: %w", err)
 		}
 		return st, nil
+	case !errors.Is(err, os.ErrNotExist):
+		return chainState{}, fmt.Errorf("read audit state: %w", err)
 	}
 
 	if err := os.MkdirAll(keyDir, 0700); err != nil {
@@ -140,44 +156,26 @@ func writeState(statePath string, st chainState) error {
 	return nil
 }
 
-// decodeKey parses a hex-encoded audit key, refusing anything too short to be
-// worth having. A weak key here is worse than a loud failure: the chain would
-// still verify, against a value an attacker can search.
-func decodeKey(source, value string) ([]byte, error) {
-	key, err := hex.DecodeString(strings.TrimSpace(value))
-	if err != nil {
-		return nil, fmt.Errorf("%s is not valid hex: %w", source, err)
-	}
-	if len(key) < 32 {
-		return nil, fmt.Errorf("%s must be at least 32 bytes, got %d", source, len(key))
-	}
-	return key, nil
-}
-
-// loadKey returns the HMAC key for the audit chain, generating and persisting
-// one on first use. keyDir must not be writable by anyone who can write the
-// audit log, or the key protects nothing.
+// loadKey returns the HMAC key for the audit chain, generating and persisting one on
+// first use. keyDir must not be writable by anyone who can write the audit log, or the
+// key protects nothing.
+//
+// This is keyfile's job, and this package's own version is the bug that package's doc
+// comment cites by name. The condition was `if data, err := os.ReadFile(f); err == nil &&
+// len(data) > 0`, so a zero-byte audit.key — or one that could not be read at all — fell
+// through to the generator and was overwritten with a fresh key. Every record ever written
+// under the original then failed verification, permanently and with nothing to restore
+// from. keyfile.LoadOrCreate creates only when the file does not exist, refuses anything
+// that does not decode to exactly 32 bytes rather than replacing it, and fsyncs the file
+// and its directory so a crash after first boot cannot leave the zero-length file that
+// started this. TestEmptyKeyFileIsNotRegenerated pins it.
 func loadKey(keyDir string) ([]byte, error) {
-	if env := os.Getenv("AUDIT_KEY"); env != "" {
-		return decodeKey("AUDIT_KEY", env)
+	if key, ok, err := keyfile.FromEnv("AUDIT_KEY", keyBytes); err != nil {
+		return nil, err
+	} else if ok {
+		return key, nil
 	}
-
-	keyFile := filepath.Join(keyDir, "audit.key")
-	if data, err := os.ReadFile(keyFile); err == nil && len(data) > 0 {
-		return decodeKey(keyFile, string(data))
-	}
-
-	key := make([]byte, 32)
-	if _, err := rand.Read(key); err != nil {
-		return nil, fmt.Errorf("generate audit key: %w", err)
-	}
-	if err := os.MkdirAll(keyDir, 0700); err != nil {
-		return nil, fmt.Errorf("mkdir key dir: %w", err)
-	}
-	if err := os.WriteFile(keyFile, []byte(hex.EncodeToString(key)), 0600); err != nil {
-		return nil, fmt.Errorf("write audit key: %w", err)
-	}
-	return key, nil
+	return keyfile.LoadOrCreate(filepath.Join(keyDir, "audit.key"), keyBytes)
 }
 
 // NewStore initializes an audit store in dir, keyed by material held in keyDir.
@@ -342,11 +340,21 @@ func (s *Store) saveAnchor() error {
 // shared package's digests. It runs once, when the log does not already carry them.
 //
 // Every entry must first verify under the digest that wrote it, so a log that was
-// already broken is never blessed, and the mark must not already count more entries
-// than the log holds: converting then would save a fresh mark over the evidence of
-// a truncation. When conversion is refused the log is left exactly as it is: if the
-// mark counts more than the log holds placeTail refuses, and otherwise the entries
-// are still in the old format, so Resume's digest check is what rejects them.
+// already broken is never blessed. On top of that the mark has to attest to this exact
+// log — the same record count *and* the same tail hash — because the mark is the only
+// input that does not live in the log's own directory.
+//
+// The count alone was not enough. An equal-length substitution passes a count check, and
+// that is the cheapest forgery to mount: kybookmarks-server keys its oldest legacy format
+// with a constant published in its repository, so a whole chain that "verifies as legacy"
+// is something anyone with write access can author, and converting on that alone re-mints
+// it under the real key. This server's legacy digest is keyed with the real key, so the
+// same substitution is not forgeable here — but the check that decides whether to re-mint
+// a log under the audit key should not be one whose soundness rests on that.
+//
+// When conversion is refused the log is left exactly as it is: if the mark counts more
+// than the log holds placeTail refuses, if it counts none placeTail refuses, and otherwise
+// the entries are still in the old format, so Resume's digest check is what rejects them.
 func (s *Store) converge(entries []Entry, st chainState) ([]Entry, error) {
 	if len(entries) == 0 {
 		return entries, nil
@@ -357,7 +365,10 @@ func (s *Store) converge(entries []Entry, st chainState) ([]Entry, error) {
 	if auditchain.VerifyRecord(s.key, recordOf(entries[len(entries)-1])) == nil {
 		return entries, nil
 	}
-	if st.Count > uint64(len(entries)) || !s.legacyChainVerifies(entries) {
+	if st.Count != uint64(len(entries)) || st.Hash != entries[len(entries)-1].Hash {
+		return entries, nil
+	}
+	if !s.legacyChainVerifies(entries) {
 		return entries, nil
 	}
 

@@ -770,3 +770,102 @@ func TestCommentsNameRealTests(t *testing.T) {
 		t.Fatalf("comments name tests that do not exist: %v", cited)
 	}
 }
+
+// An empty audit.key must never be replaced. The old loadKey read the file and treated
+// both a read error and a zero-length result as "no key yet", so it minted a fresh one and
+// wrote it over the original — after which every record ever written was unverifiable,
+// with nothing to restore from. keyfile.LoadOrCreate creates only when the file is absent.
+func TestEmptyKeyFileIsNotRegenerated(t *testing.T) {
+	dir, keyDir := t.TempDir(), t.TempDir()
+	loggedStore(t, dir, keyDir, 2)
+
+	keyPath := filepath.Join(keyDir, "audit.key")
+	original, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(original) == 0 {
+		t.Fatal("setup did not persist a key")
+	}
+
+	// The file is emptied — a truncated write, an interrupted restore, a full disk.
+	if err := os.WriteFile(keyPath, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := NewStore(dir, keyDir); err == nil {
+		t.Fatal("NewStore started on an empty audit.key instead of refusing")
+	}
+	if data, err := os.ReadFile(keyPath); err != nil || len(data) != 0 {
+		t.Fatalf("the empty key file was overwritten (err=%v, %d bytes); the original key is gone", err, len(data))
+	}
+
+	// And the refusal is recoverable: restoring the key from backup brings the log back,
+	// which is only true because nothing was regenerated over it.
+	if err := os.WriteFile(keyPath, original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewStore(dir, keyDir)
+	if err != nil {
+		t.Fatalf("NewStore after restoring the key: %v", err)
+	}
+	if ok, err := store.VerifyIntegrity(); !ok || err != nil {
+		t.Fatalf("records did not verify under the restored key: ok=%v err=%v", ok, err)
+	}
+}
+
+// A mark that cannot be read must not be recreated empty. loadState used to treat every
+// failure but success as "no mark yet" and rename an empty one into place, destroying the
+// anchor — and placeTail then reported that the mark "was removed and recreated empty",
+// describing what the process had just done to it.
+func TestUnreadableMarkIsNotOverwritten(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the permission bits this test relies on")
+	}
+	dir, keyDir := t.TempDir(), t.TempDir()
+	loggedStore(t, dir, keyDir, 3)
+
+	statePath := filepath.Join(keyDir, "audit.state")
+	original, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.Chmod(statePath, 0000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(statePath, 0600) })
+
+	if _, err := NewStore(dir, keyDir); err == nil {
+		t.Fatal("NewStore started on an unreadable mark instead of reporting it")
+	}
+
+	if err := os.Chmod(statePath, 0600); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(original, after) {
+		t.Fatalf("the unreadable mark was overwritten:\nbefore %s\nafter  %s", original, after)
+	}
+}
+
+// converge re-mints a legacy log under the audit key. It may only do that for the log the
+// mark attests to, and the mark names both a count and a tail hash. A count-only check is
+// passed by any equal-length substitution.
+func TestLegacyLogIsNotConvergedAgainstAMismatchedMark(t *testing.T) {
+	dir, keyDir := t.TempDir(), t.TempDir()
+	entries := writeKeyedLegacyChain(t, dir, keyDir, 3)
+
+	// Same count, different tail: the mark no longer names this log.
+	writeMark(t, keyDir, chainState{Count: 3, Hash: entries[0].Hash})
+
+	if _, err := NewStore(dir, keyDir); err == nil {
+		t.Fatal("NewStore converged a legacy log the mark does not name")
+	}
+	if got := readChain(t, dir); got[2].Hash != entries[2].Hash {
+		t.Fatal("the log was rewritten even though conversion was refused")
+	}
+}
