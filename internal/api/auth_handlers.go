@@ -265,28 +265,27 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request, u users.Us
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-// handleHealth is what the container healthcheck polls. It answers 200 either way, and
-// says "degraded" once an audit write has failed: the vault still works, and it is still
-// the only way to the credentials in it, but it is no longer recording what it does.
+// handleHealth is what the container healthcheck polls. It takes no credential, so it
+// answers one thing: the process is up.
 //
-// Not 503. There is nothing here to shed an instance to — docker-compose.yml runs one
-// container with `restart: unless-stopped` and no orchestrator, and plain Compose does
-// not act on an unhealthy container at all. The counter is sticky, so 503 turned one
+// Still 200 once an audit write has failed, and still not 503. There is nothing here to
+// shed an instance to — docker-compose.yml runs one container with
+// `restart: unless-stopped` and no orchestrator, and plain Compose does not act on an
+// unhealthy container at all. The audit-failure counter is sticky, so 503 turned one
 // transient audit-write failure into a vault that stays out of service until a human
 // restarts it; behind Traefik or Kubernetes that is a full DATA_DIR becoming a credential
-// lockout, which is worse than the record that was lost. The operator signal is the
-// "AUDIT WRITE FAILED" line on stderr, which carries the count and the cause.
+// lockout, which is worse than the record that was lost.
 //
-// The body is coarse on purpose — no count, no cause — but that is tidiness, not secrecy:
-// "degraded" has one cause in this server, so anyone reading the string knows it.
-// TestFailedAuditWriteDegradesHealth pins the status code and the body in both states.
+// It no longer says "degraded" either, and that is secrecy rather than tidiness:
+// "degraded" has one cause in this server, so the string let an anonymous caller watch
+// for the moment audit writes began failing — confirmation that a disk they were filling
+// was full. The operator signal is the "AUDIT WRITE FAILED" line on stderr with its count
+// and cause; the machine-readable one is GET /api/audit/verify, which is admin-only and
+// carries writeFailures. TestFailedAuditWriteIsReportedOnlyToAnAdmin pins the status
+// code, the body that does not change, and the count behind auth.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	status := "ok"
-	if s.auditFailures.Load() > 0 {
-		status = "degraded"
-	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":  status,
+		"status":  "ok",
 		"service": "kypassword-server",
 		"time":    time.Now().UTC().Format(time.RFC3339),
 	})

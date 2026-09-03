@@ -109,7 +109,8 @@ func (s *Server) handleAuditList(w http.ResponseWriter, r *http.Request, admin u
 // handleAuditVerify checks the stored chain, and reports separately how many records
 // never reached it. VerifyIntegrity only ever sees what was written: a log that lost a
 // record to a full disk verifies perfectly, and "valid" alone would say the trail is
-// complete when it is not. TestFailedAuditWriteDegradesHealth pins the count here.
+// complete when it is not. It is the only place the count is readable.
+// TestFailedAuditWriteIsReportedOnlyToAnAdmin pins the count here.
 func (s *Server) handleAuditVerify(w http.ResponseWriter, r *http.Request, admin users.User) {
 	ok, err := s.audit.VerifyIntegrity()
 	writeJSON(w, http.StatusOK, map[string]any{

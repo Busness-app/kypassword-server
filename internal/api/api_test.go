@@ -56,6 +56,8 @@ func newServerIn(t *testing.T, dir string) (*Server, string) {
 	if err != nil {
 		t.Fatalf("NewServer failed: %v", err)
 	}
+	// Stops the background audit flush before t.TempDir removes what it writes to.
+	t.Cleanup(srv.Close)
 	return srv, dir + "/data"
 }
 
@@ -381,7 +383,7 @@ func TestAbortedRequestStillRecordsTheAudit(t *testing.T) {
 // The audit log path is made a directory rather than the directory made read-only,
 // because root writes into a read-only directory whatever its mode says. O_WRONLY on a
 // directory is EISDIR for every uid, so this test has no skip.
-func TestFailedAuditWriteDegradesHealth(t *testing.T) {
+func TestFailedAuditWriteIsReportedOnlyToAnAdmin(t *testing.T) {
 	srv, dataDir := newServerIn(t, t.TempDir())
 	_, cookie := signedInUser(t, srv, "dana", users.RoleAdmin)
 	handler := srv.Routes()
@@ -425,8 +427,11 @@ func TestFailedAuditWriteDegradesHealth(t *testing.T) {
 	if !strings.Contains(logs.String(), "AUDIT WRITE FAILED") || !strings.Contains(logs.String(), "auth.logout") {
 		t.Fatalf("a failed audit write left no line an operator could see: %q", logs.String())
 	}
-	if code, status := health(); code != http.StatusOK || status != "degraded" {
-		t.Fatalf(`GET /api/health = %d %q after an audit write failed, want 200 "degraded"`, code, status)
+	// 200 still — a full audit volume must not become a credential lockout — and the
+	// body must not have moved, because an anonymous caller reading a change here is
+	// reading confirmation that the disk they are filling is full.
+	if code, status := health(); code != http.StatusOK || status != "ok" {
+		t.Fatalf(`GET /api/health = %d %q after an audit write failed, want an unchanged 200 "ok"`, code, status)
 	}
 
 	// And the admin asking whether the trail is sound is told, which VerifyIntegrity

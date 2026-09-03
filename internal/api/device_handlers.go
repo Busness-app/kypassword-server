@@ -42,7 +42,9 @@ func (s *Server) handlePairingRedeem(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
 	dev, err := s.devices.RedeemPairing(req.CodeOrPIN, req.DeviceName, req.Platform, ip)
 	if err != nil {
-		s.record(r, "device.pairing_failed", "", "", ip, "failed pairing redeem: "+err.Error())
+		// Within the source's audit budget: redeem takes no credential, and a wrong
+		// code costs the store nothing until this record. See audit_budget.go.
+		s.recordAnonymousRejection(r, "device.pairing_failed", ip, "failed pairing redeem: "+err.Error())
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}

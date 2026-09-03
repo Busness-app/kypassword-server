@@ -106,7 +106,10 @@ func (s *Server) handleSyncWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !authorized {
-		s.record(r, "sync.rejected", "", "", clientIP(r), "replication request failed authentication")
+		// Within the source's audit budget: this record is written before any
+		// credential has been shown, so an anonymous flood must not be able to
+		// spend the server's fsyncs one rejection at a time. See audit_budget.go.
+		s.recordAnonymousRejection(r, "sync.rejected", clientIP(r), "replication request failed authentication")
 		http.Error(w, "unauthorized sync request", http.StatusUnauthorized)
 		return
 	}

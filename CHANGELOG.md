@@ -72,18 +72,41 @@ and booted clean.
 ### Failed audit writes are no longer silent
 
 If an audit write fails — a read-only log directory, a full disk, the append timing out —
-it is reported three ways: `AUDIT WRITE FAILED` on stderr with the cause and a running
-count, `"status": "degraded"` from `GET /api/health`, and a `writeFailures` count from the
-admin-only `GET /api/audit/verify`, which otherwise reports a log that lost a record as
-perfectly valid. **Watch stderr for `AUDIT WRITE FAILED`** — that is the line with the
-cause in it.
+it is reported two ways: `AUDIT WRITE FAILED` on stderr with the cause and a running
+count, and a `writeFailures` count from the admin-only `GET /api/audit/verify`, which
+otherwise reports a log that lost a record as perfectly valid. **Watch stderr for
+`AUDIT WRITE FAILED`** — that is the line with the cause in it.
+
+`GET /api/health` does not report it. It takes no credential, and there is only one way to
+make audit writes fail from outside: fill the volume. A health endpoint that changed when
+they started failing would tell whoever was filling it that the filling had worked.
 
 The request itself still succeeds: the operation being recorded has already happened, and
 a 500 would only ask the client to retry something that would be just as unrecorded.
 
-`GET /api/health` stays **200** in both states, and the container healthcheck therefore
-stays green. That is deliberate. The counter never clears — the missing record does not
-come back — so a 503 would take a credential vault out of service for one transient write
+`GET /api/health` stays **200** either way, and the container healthcheck therefore stays
+green. That is deliberate. The counter never clears — the missing record does not come
+back — so a 503 would take a credential vault out of service for one transient write
 failure and keep it there until a human restarted it. Behind a load balancer that is a
 full data volume turning into a lockout, which is worse than the record that was lost.
-Clear the degraded state by fixing the log volume and restarting.
+Clear the count by fixing the log volume and restarting.
+
+### Rejections from unauthenticated callers are bounded
+
+`sync.rejected` and `device.pairing_failed` are recorded before the caller has shown any
+credential, and each record costs the two fsyncs above, taken under the audit store's one
+mutex — so anonymous traffic could serialise every audited operation in the server behind
+it and grow the log without bound. Each source may now cause **20 such records per
+minute-long window** — about 50 ms of fsync, whatever the request rate above it. The
+windows are fixed rather than sliding, so a burst that straddles a boundary can produce
+two windows' worth in quick succession; it cannot sustain more than the rate.
+
+Rejections past that budget are **folded, not dropped**: they are counted, and the count
+is written as one `audit.suppressed` record in the next window — by the source's next
+rejection, or by a periodic flush if it has stopped sending. A rate limit that discarded
+audit records would hand an attacker a way to erase their own rejections by generating
+more of them. The reply to the caller is unchanged: still 401 or 400, never 429.
+
+The budget is keyed on the peer address, not on `X-Forwarded-For`, which the caller
+writes. Behind a reverse proxy every caller therefore shares one budget: more records get
+folded than strictly need to be, and none are lost.

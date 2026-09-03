@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -39,6 +40,14 @@ type Server struct {
 	// looked — clears it. It is reported, never acted on: see handleHealth for why
 	// a sticky counter must not be allowed to take a credential vault out of service.
 	auditFailures atomic.Int64
+
+	// rejects bounds the audit writes an unauthenticated caller can cause, and
+	// flushStop/flushDone run the periodic flush that keeps the folded ones from
+	// being lost. See audit_budget.go.
+	rejects   *auditBudget
+	flushStop chan struct{}
+	flushDone chan struct{}
+	closeOnce sync.Once
 
 	sessMu   sync.RWMutex
 	sessions map[string]Session // token -> Session
@@ -94,7 +103,11 @@ func NewServer(cfg Config) (*Server, error) {
 		ssoStore:      ssoSt,
 		pairingSecret: cfg.PairingSecret,
 		sessions:      make(map[string]Session),
+		rejects:       newAuditBudget(auditBudgetWindow, auditBudgetBurst),
+		flushStop:     make(chan struct{}),
+		flushDone:     make(chan struct{}),
 	}
+	go s.flushSuppressed()
 
 	return s, nil
 }
@@ -177,13 +190,22 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 // the log is down.
 //
 // What a lost record does change is what the operator and the auditor are told. The
-// failure goes to stderr with its cause and the running count, GET /api/health reports
-// "degraded" from then on, and GET /api/audit/verify — which is admin-only, and the one
-// place someone asks whether the trail is sound — carries the count, because
-// VerifyIntegrity cannot see a record that never reached the log.
-// TestFailedAuditWriteDegradesHealth pins all four.
+// failure goes to stderr with its cause and the running count, and GET /api/audit/verify
+// — which is admin-only, and the one place someone asks whether the trail is sound —
+// carries the count, because VerifyIntegrity cannot see a record that never reached the
+// log. GET /api/health does not carry it: it takes no credential, and a caller filling
+// the disk must not be able to watch the filling work.
+// TestFailedAuditWriteIsReportedOnlyToAnAdmin pins all three.
+//
+// Rejections recorded before any credential is checked go through
+// recordAnonymousRejection instead, which bounds what they cost.
 func (s *Server) record(r *http.Request, action, userID, deviceID, ip, details string) {
-	if _, err := s.audit.Log(r.Context(), action, userID, deviceID, ip, details); err != nil {
+	s.recordCtx(r.Context(), action, userID, deviceID, ip, details)
+}
+
+// recordCtx is record for a call site that has no request — the periodic flush.
+func (s *Server) recordCtx(ctx context.Context, action, userID, deviceID, ip, details string) {
+	if _, err := s.audit.Log(ctx, action, userID, deviceID, ip, details); err != nil {
 		n := s.auditFailures.Add(1)
 		// details is left out on purpose: it carries operation content, and both the
 		// audit records and these logs are content-blind.
