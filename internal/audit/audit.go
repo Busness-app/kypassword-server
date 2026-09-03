@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -31,6 +32,13 @@ const keyBytes = 32
 // which runs with that lock held and no context reaching it, so a store that hangs
 // hangs this caller for as long as it stays hung.
 var appendTimeout = 5 * time.Second
+
+// ErrCorruptLog reports a log the reader cannot get to the end of: bytes that do not
+// decode, with newline-terminated records still behind them. It is separate from
+// ErrTruncated only so the message can name the damage and its remedy; both refuse to
+// start. It names what was read, not what caused it — an undecodable line is something
+// an attacker can write, so which error comes back is not evidence about who wrote it.
+var ErrCorruptLog = errors.New("audit: log holds bytes that do not decode")
 
 // Entry represents a single tamper-evident audit record in the chain.
 type Entry struct {
@@ -361,17 +369,30 @@ func (s *Store) readAll() ([]Entry, int64, error) {
 	return entries, end, nil
 }
 
-// trimTornTail drops the bytes past the last record the reader could decode.
+// trimTornTail drops an unterminated fragment left on the end of the log, and refuses to
+// start when the bytes the reader stopped at are anything else.
 //
 // A record and its newline are written in one call, and a crash or a full disk can cut
-// that call in half. The reader stops at the fragment, so the next append lands behind
-// it and every record after that is unreadable — the log is lost from the tear onward
-// while every check still passes. Removing the fragment costs nothing: it is bytes no
-// check consults, past the mark, and past the last record placeTail counted.
+// that call in half. The reader stops at the fragment, so the next append lands behind it
+// and every record after that is unreadable — the log lost from the tear onward while
+// every check still passes.
+//
+// Only a fragment may be removed, and the newline is what tells one from the other: every
+// complete record this package writes ends in one, so bytes past the last decodable record
+// that contain no newline cannot hold a complete record. That is the whole of the safety
+// claim, and it is the whole of the condition below.
+//
+// Bytes that do contain a newline are damage further up the log — one corrupted line with
+// intact records behind it. readAll stops at the first line it cannot decode, so `end`
+// there is the middle of the file, not its tail; truncating to it destroyed every complete
+// record after the damage, and a mark lagging behind the tear made that a clean boot with
+// nothing left to show it. So refuse, in the same terms as the other boot refusals: the
+// remedy is a restore, and a log this server cannot read to the end is not one it may
+// append to. TestDamagedRecordDoesNotTakeTheLogWithIt holds it;
+// TestTornTailIsRepaired covers the fragment that is genuinely trailing.
 //
 // It runs after placeTail, never before. A log placeTail refuses is evidence for the
-// operator, and editing evidence is not this function's job. TestTornTailIsRepaired
-// covers the crash that leaves a fragment behind.
+// operator, and editing evidence is not this function's job.
 func (s *Store) trimTornTail(end int64) error {
 	fi, err := os.Stat(s.filePath)
 	if os.IsNotExist(err) {
@@ -403,11 +424,44 @@ func (s *Store) trimTornTail(end int64) error {
 	if fi.Size() == clean {
 		return nil
 	}
+
+	newline, err := holdsNewline(io.NewSectionReader(f, clean, fi.Size()-clean))
+	if err != nil {
+		return err
+	}
+	if newline {
+		return fmt.Errorf("%w: %s stops decoding %d bytes in and %d bytes of newline-terminated "+
+			"records follow. That is damage in the middle of the log — a corrupted block, or a write "+
+			"torn by a full disk — not an incomplete record on the end, and the records after it are "+
+			"still there. This server will not start rather than append past bytes it cannot read. "+
+			"Keep the file for the auditor and restore the log from backup",
+			ErrCorruptLog, s.filePath, clean, fi.Size()-clean)
+	}
+
 	if err := f.Truncate(clean); err != nil {
 		return err
 	}
 	log.Printf("audit: dropped %d bytes of an incomplete trailing record from %s", fi.Size()-clean, s.filePath)
 	return f.Sync()
+}
+
+// holdsNewline reports whether r contains a newline, without holding r in memory: the
+// fragment it is asked about is one record long, but the damage case it separates that
+// from can be the rest of the log.
+func holdsNewline(r io.Reader) (bool, error) {
+	buf := make([]byte, 8192)
+	for {
+		n, err := r.Read(buf)
+		if bytes.IndexByte(buf[:n], '\n') >= 0 {
+			return true, nil
+		}
+		if err == io.EOF {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+	}
 }
 
 // saveAnchor persists the anchor beside the key.
@@ -583,7 +637,9 @@ func (s *Store) Log(ctx context.Context, action, userID, deviceID, ip, details s
 		// ordered on disk if this call is here: without it a crash can land the mark
 		// first, and the next start finds fewer records than the mark counts and
 		// refuses to boot — an ordinary power loss reported to the operator as
-		// tampering. It buys that at one fsync per audited request; see CHANGELOG.md.
+		// tampering. This is one of the two flushes an audited request pays for; the
+		// other is writeState's, before its rename. See CHANGELOG.md for the measured
+		// cost of the pair.
 		//
 		// Unproven here: exposing the wrong order takes a crash between the two
 		// writes, which no test in this package can stage. What is claimed is the

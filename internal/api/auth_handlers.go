@@ -265,18 +265,27 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request, u users.Us
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-// handleHealth is what the container healthcheck polls. It reports unhealthy once an
-// audit write has failed: the vault still works, but it is no longer recording what it
-// does, and that is a state to be pulled out of rotation rather than served from.
+// handleHealth is what the container healthcheck polls. It answers 200 either way, and
+// says "degraded" once an audit write has failed: the vault still works, and it is still
+// the only way to the credentials in it, but it is no longer recording what it does.
 //
-// Why the reason is not in the body: this endpoint is unauthenticated, and "the audit
-// log is broken" is not something to hand an attacker. The reason is in the server log.
+// Not 503. There is nothing here to shed an instance to — docker-compose.yml runs one
+// container with `restart: unless-stopped` and no orchestrator, and plain Compose does
+// not act on an unhealthy container at all. The counter is sticky, so 503 turned one
+// transient audit-write failure into a vault that stays out of service until a human
+// restarts it; behind Traefik or Kubernetes that is a full DATA_DIR becoming a credential
+// lockout, which is worse than the record that was lost. The operator signal is the
+// "AUDIT WRITE FAILED" line on stderr, which carries the count and the cause.
+//
+// The body is coarse on purpose — no count, no cause — but that is tidiness, not secrecy:
+// "degraded" has one cause in this server, so anyone reading the string knows it.
+// TestFailedAuditWriteDegradesHealth pins the status code and the body in both states.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	status, code := "ok", http.StatusOK
+	status := "ok"
 	if s.auditFailures.Load() > 0 {
-		status, code = "degraded", http.StatusServiceUnavailable
+		status = "degraded"
 	}
-	writeJSON(w, code, map[string]any{
+	writeJSON(w, http.StatusOK, map[string]any{
 		"status":  status,
 		"service": "kypassword-server",
 		"time":    time.Now().UTC().Format(time.RFC3339),

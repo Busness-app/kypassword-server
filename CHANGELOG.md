@@ -53,23 +53,37 @@ digest and its predecessor.
 
 ### Durability
 
-Each audit record is flushed to disk before the mark that counts it is advanced. This
-costs one `fsync` per audited request, on the request path. It buys the ordering the
-refusals above depend on: without it the two files can reach stable storage in either
+Each audit record is flushed to disk before the mark that counts it is advanced, and the
+mark is flushed before the rename that publishes it. That is **two `fsync` calls per
+audited request**, on the request path and serialised under the store mutex: measured at
+about **2.6 ms per audited request against 0.08 ms unflushed — roughly 32x** (btrfs on
+NVMe, 300 appends per run, three runs; a slower disk will be worse). It buys the ordering
+the refusals above depend on: without it the two files can reach stable storage in either
 order, and a mark that lands first turns an ordinary power loss into condition 1 at the
 next start — a tamper accusation produced by pulling the plug.
 
-A record cut in half by a crash or a full disk is dropped at startup, and a short write is
-rolled back as it happens. Before, the reader stopped at the fragment and the next append
-landed behind it, so the log was unreadable from that point on while every check still
-passed.
+A short write is rolled back as it happens, and an incomplete record left on the *end* of
+the log by a crash is dropped at startup. Only the end: bytes the reader stops at with
+newline-terminated records still behind them are damage in the middle of the log, and the
+server refuses to start rather than truncate to the tear. An earlier version of this fix
+truncated either way, which destroyed every complete record after a single corrupted line
+and booted clean.
 
 ### Failed audit writes are no longer silent
 
 If an audit write fails — a read-only log directory, a full disk, the append timing out —
-the failure is logged as `AUDIT WRITE FAILED` and `GET /api/health` answers 503 from then
-on, so the container healthcheck takes the instance out of rotation. The request itself
-still succeeds: the operation being recorded has already happened, and a 500 would only
-ask the client to retry something that would be just as unrecorded. The 503 is sticky —
-the missing record does not come back — so clear it by fixing the log volume and
-restarting.
+it is reported three ways: `AUDIT WRITE FAILED` on stderr with the cause and a running
+count, `"status": "degraded"` from `GET /api/health`, and a `writeFailures` count from the
+admin-only `GET /api/audit/verify`, which otherwise reports a log that lost a record as
+perfectly valid. **Watch stderr for `AUDIT WRITE FAILED`** — that is the line with the
+cause in it.
+
+The request itself still succeeds: the operation being recorded has already happened, and
+a 500 would only ask the client to retry something that would be just as unrecorded.
+
+`GET /api/health` stays **200** in both states, and the container healthcheck therefore
+stays green. That is deliberate. The counter never clears — the missing record does not
+come back — so a 503 would take a credential vault out of service for one transient write
+failure and keep it there until a human restarted it. Behind a load balancer that is a
+full data volume turning into a lockout, which is worse than the record that was lost.
+Clear the degraded state by fixing the log volume and restarting.

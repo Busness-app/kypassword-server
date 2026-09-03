@@ -370,32 +370,46 @@ func TestAbortedRequestStillRecordsTheAudit(t *testing.T) {
 // The request still succeeds. The operation it is recording has already happened, so a
 // 500 would not undo it — it would ask the client to retry something the server has
 // already done, and the retry would be just as unrecorded. What changes is that the
-// failure is logged and the instance stops reporting healthy, so the container
-// healthcheck stops sending it work.
+// failure is reported: on stderr, in the health body, and to an admin asking whether
+// the trail is sound.
+//
+// Health stays 200 in both states. A sticky counter wired to 503 is a credential vault
+// that takes itself out of service for one transient write failure and stays there
+// until a human restarts it; both status codes are asserted here so that trade is a
+// decision rather than an accident.
+//
+// The audit log path is made a directory rather than the directory made read-only,
+// because root writes into a read-only directory whatever its mode says. O_WRONLY on a
+// directory is EISDIR for every uid, so this test has no skip.
 func TestFailedAuditWriteDegradesHealth(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root writes into a read-only directory whatever its mode says")
-	}
 	srv, dataDir := newServerIn(t, t.TempDir())
 	_, cookie := signedInUser(t, srv, "dana", users.RoleAdmin)
 	handler := srv.Routes()
 
-	health := func() int {
+	health := func() (int, string) {
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/health", nil))
-		return rec.Code
+		var body struct {
+			Status string `json:"status"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("health body %q: %v", rec.Body.String(), err)
+		}
+		return rec.Code, body.Status
 	}
-	if code := health(); code != http.StatusOK {
-		t.Fatalf("GET /api/health = %d with a working audit log, want 200", code)
+	if code, status := health(); code != http.StatusOK || status != "ok" {
+		t.Fatalf(`GET /api/health = %d %q with a working audit log, want 200 "ok"`, code, status)
 	}
 
-	// A read-only log volume, which is one of the ways this actually happens. The log
-	// file has not been created yet, so the append is what fails.
-	auditDir := filepath.Join(dataDir, "audit")
-	if err := os.Chmod(auditDir, 0500); err != nil {
-		t.Fatalf("Chmod: %v", err)
+	// A log the append cannot open, which a full or broken volume also produces. The
+	// store is already constructed, so this is a write-time failure, not a boot one.
+	logPath := filepath.Join(dataDir, "audit", "audit.jsonl")
+	if err := os.RemoveAll(logPath); err != nil {
+		t.Fatalf("RemoveAll: %v", err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(auditDir, 0700) })
+	if err := os.Mkdir(logPath, 0700); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
 
 	var logs bytes.Buffer
 	log.SetOutput(&logs)
@@ -411,7 +425,24 @@ func TestFailedAuditWriteDegradesHealth(t *testing.T) {
 	if !strings.Contains(logs.String(), "AUDIT WRITE FAILED") || !strings.Contains(logs.String(), "auth.logout") {
 		t.Fatalf("a failed audit write left no line an operator could see: %q", logs.String())
 	}
-	if code := health(); code != http.StatusServiceUnavailable {
-		t.Fatalf("GET /api/health = %d after an audit write failed, want 503", code)
+	if code, status := health(); code != http.StatusOK || status != "degraded" {
+		t.Fatalf(`GET /api/health = %d %q after an audit write failed, want 200 "degraded"`, code, status)
+	}
+
+	// And the admin asking whether the trail is sound is told, which VerifyIntegrity
+	// alone cannot say: it only ever sees the records that were written.
+	_, adminCookie := signedInUser(t, srv, "auditor", users.RoleAdmin)
+	vreq := httptest.NewRequest(http.MethodGet, "/api/audit/verify", nil)
+	vreq.AddCookie(adminCookie)
+	vrec := httptest.NewRecorder()
+	handler.ServeHTTP(vrec, vreq)
+	var verify struct {
+		WriteFailures int64 `json:"writeFailures"`
+	}
+	if err := json.Unmarshal(vrec.Body.Bytes(), &verify); err != nil {
+		t.Fatalf("verify body %q: %v", vrec.Body.String(), err)
+	}
+	if verify.WriteFailures == 0 {
+		t.Fatalf("GET /api/audit/verify reported no lost records after a failed write: %s", vrec.Body.String())
 	}
 }

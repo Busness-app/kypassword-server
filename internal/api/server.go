@@ -36,7 +36,8 @@ type Server struct {
 
 	// auditFailures counts audit writes that did not reach the log. Sticky: the
 	// missing record never comes back, so only a restart — after someone has
-	// looked — clears it.
+	// looked — clears it. It is reported, never acted on: see handleHealth for why
+	// a sticky counter must not be allowed to take a credential vault out of service.
 	auditFailures atomic.Int64
 
 	sessMu   sync.RWMutex
@@ -175,18 +176,19 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 // would turn "you are not authorised" into "the server is broken" and tell an attacker
 // the log is down.
 //
-// What a lost record does change is whether this instance should still be taking
-// traffic. The failure is logged for the operator and counted, and GET /api/health
-// answers 503 from then on, so the container healthcheck and anything in front of it
-// stop sending work to a vault that is not recording what it does.
-// TestFailedAuditWriteDegradesHealth pins all three: the status the client sees, the
-// line the operator sees, and the health the healthcheck sees.
+// What a lost record does change is what the operator and the auditor are told. The
+// failure goes to stderr with its cause and the running count, GET /api/health reports
+// "degraded" from then on, and GET /api/audit/verify — which is admin-only, and the one
+// place someone asks whether the trail is sound — carries the count, because
+// VerifyIntegrity cannot see a record that never reached the log.
+// TestFailedAuditWriteDegradesHealth pins all four.
 func (s *Server) record(r *http.Request, action, userID, deviceID, ip, details string) {
 	if _, err := s.audit.Log(r.Context(), action, userID, deviceID, ip, details); err != nil {
-		s.auditFailures.Add(1)
+		n := s.auditFailures.Add(1)
 		// details is left out on purpose: it carries operation content, and both the
 		// audit records and these logs are content-blind.
-		log.Printf("AUDIT WRITE FAILED action=%s user=%s device=%s ip=%s: %v", action, userID, deviceID, ip, err)
+		log.Printf("AUDIT WRITE FAILED (%d since start) action=%s user=%s device=%s ip=%s: %v",
+			n, action, userID, deviceID, ip, err)
 	}
 }
 

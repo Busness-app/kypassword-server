@@ -802,10 +802,13 @@ func TestEmptyKeyFileIsNotRegenerated(t *testing.T) {
 // failure but success as "no mark yet" and rename an empty one into place, destroying the
 // anchor — and placeTail then reported that the mark "was removed and recreated empty",
 // describing what the process had just done to it.
+//
+// The mark is made unreadable with a symlink to itself, not with chmod 0000: root ignores
+// the permission bits, and ELOOP is ELOOP for every uid. Rename does not follow a symlink
+// in its last component, so the buggy loadState still replaces the link with a regular
+// file — the destruction this test is looking for is still reachable, which a directory
+// in the same place would have quietly made impossible.
 func TestUnreadableMarkIsNotOverwritten(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root ignores the permission bits this test relies on")
-	}
 	dir, keyDir := t.TempDir(), t.TempDir()
 	loggedStore(t, dir, keyDir, 3)
 
@@ -814,25 +817,39 @@ func TestUnreadableMarkIsNotOverwritten(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	if err := os.Chmod(statePath, 0000); err != nil {
+	if err := os.Remove(statePath); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(statePath, 0600) })
+	if err := os.Symlink("audit.state", statePath); err != nil {
+		t.Fatal(err)
+	}
 
 	if _, err := NewStore(dir, keyDir); err == nil {
 		t.Fatal("NewStore started on an unreadable mark instead of reporting it")
 	}
-
-	if err := os.Chmod(statePath, 0600); err != nil {
-		t.Fatal(err)
-	}
-	after, err := os.ReadFile(statePath)
+	fi, err := os.Lstat(statePath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(original, after) {
-		t.Fatalf("the unreadable mark was overwritten:\nbefore %s\nafter  %s", original, after)
+	if fi.Mode()&os.ModeSymlink == 0 {
+		after, _ := os.ReadFile(statePath)
+		t.Fatalf("the unreadable mark was written over with %q", after)
+	}
+
+	// And the refusal is recoverable: putting the real mark back brings the log back,
+	// which is only true because nothing was written over it.
+	if err := os.Remove(statePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewStore(dir, keyDir)
+	if err != nil {
+		t.Fatalf("NewStore after restoring the mark: %v", err)
+	}
+	if ok, err := store.VerifyIntegrity(); !ok || err != nil {
+		t.Fatalf("the log did not verify against the restored mark: ok=%v err=%v", ok, err)
 	}
 }
 
@@ -1031,4 +1048,66 @@ func TestCorruptMarkRefusesToStart(t *testing.T) {
 	if readErr != nil || string(after) != `{"count":2,"ha` {
 		t.Fatalf("the corrupt mark was rewritten (%q, err %v)", after, readErr)
 	}
+}
+
+// readAll stops at the first line it cannot decode, so a byte corrupted in the middle of
+// the log leaves `end` in the middle of the file — and trimTornTail truncated there,
+// destroying every complete record after the damage. A mark lagging behind the damage is
+// the "config volume was briefly unwritable" state placeTail already reconciles, so this
+// needs no attacker: the server booted clean, said it had dropped "an incomplete trailing
+// record", and the shortened log then verified green against the mark.
+//
+// Removing the newline guard from trimTornTail must fail this test.
+func TestDamagedRecordDoesNotTakeTheLogWithIt(t *testing.T) {
+	dir, keyDir := t.TempDir(), t.TempDir()
+	loggedStore(t, dir, keyDir, 5)
+	entries := readChain(t, dir)
+	if len(entries) != 5 {
+		t.Fatalf("setup wrote %d records, want 5", len(entries))
+	}
+
+	// The mark lags two records behind the log, which placeTail adopts rather than refuses.
+	writeMark(t, keyDir, chainState{Count: 2, Hash: entries[1].Hash})
+
+	logPath := filepath.Join(dir, "audit.jsonl")
+	before, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// One byte inside record 3: the ':' after "index" becomes ',', so the line no longer
+	// decodes. Records 4 and 5 are untouched, complete, and correctly signed.
+	lines := bytes.SplitAfter(before, []byte("\n"))
+	if len(lines) < 5 {
+		t.Fatalf("log holds %d lines, want at least 5", len(lines))
+	}
+	i := bytes.IndexByte(lines[2], ':')
+	if i < 0 {
+		t.Fatal("record 3 has no ':' to corrupt")
+	}
+	lines[2][i] = ','
+	before = bytes.Join(lines, nil)
+	if err := os.WriteFile(logPath, before, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, storeErr := NewStore(dir, keyDir)
+
+	after, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Errorf("the damaged log was edited: %d bytes before, %d after; %d of 5 records survive",
+			len(before), len(after), len(readChain(t, dir)))
+	}
+	for _, e := range entries[3:] {
+		if !bytes.Contains(after, []byte(e.Hash)) {
+			t.Errorf("record %d was complete and signed, and is no longer on disk", e.Index+1)
+		}
+	}
+	if !errors.Is(storeErr, ErrCorruptLog) {
+		t.Fatalf("NewStore on a log with undecodable bytes in the middle of it: %v, want ErrCorruptLog", storeErr)
+	}
+	t.Logf("%d bytes and %d records before, %d bytes and %d records after; refused with: %v",
+		len(before), len(entries), len(after), len(readChain(t, dir)), storeErr)
 }
