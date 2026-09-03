@@ -1,0 +1,65 @@
+# Early warning, not a merge gate.
+#
+# ci.yml builds against the ky-primitives version pinned in go.mod. That tells you nothing
+# about where the library is going, so a breaking change lands here as a surprise at bump
+# time. This job answers the other question -- "the next time we bump ky-primitives, will
+# it break us?" -- by building against the library's default branch.
+#
+# It deliberately does not run on pull requests, which is also why it is a separate file
+# rather than a job in ci.yml: triggers are per-workflow, so a job there would inherit the
+# pull_request trigger. A failure here is caused by a change in another repository, and
+# gating PRs on it would block work that has nothing to do with it.
+name: ky-primitives compatibility (early warning)
+
+on:
+  schedule:
+    - cron: '37 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compat:
+    name: Build against ky-primitives default branch
+    runs-on: ubuntu-latest
+    steps:
+      # Both checkouts use persist-credentials: false -- nothing after this runs git
+      # against a remote, so leaving an auth header in .git/config would only widen what
+      # the build and test steps below can read. ky-primitives is a public repository, so
+      # reading it needs no repository secret; this workflow references none.
+      - name: Check out this repository
+        uses: actions/checkout@v7
+        with:
+          path: consumer
+          persist-credentials: false
+
+      - name: Check out ky-primitives default branch
+        uses: actions/checkout@v7
+        with:
+          repository: Busness-app/ky-primitives
+          path: ky-primitives
+          persist-credentials: false
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: consumer/go.mod
+          cache: true
+          cache-dependency-path: consumer/go.sum
+
+      - name: Point this repository at that checkout
+        working-directory: consumer
+        run: go mod edit -replace github.com/Busness-app/ky-primitives=../ky-primitives
+
+      - name: go build
+        working-directory: consumer
+        run: go build ./...
+
+      - name: go test
+        working-directory: consumer
+        run: go test -count=1 ./...
+
+      - name: Explain the failure
+        if: failure()
+        run: |
+          echo "::error::EARLY WARNING, NOT A MERGE GATE. Your pull request did not cause this. kypassword-server no longer builds or tests against the ky-primitives default branch, so the next version bump will break it. Fix it here, or in ky-primitives, before that bump -- no branch in this repository is blocked in the meantime."
