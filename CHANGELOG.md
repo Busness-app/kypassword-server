@@ -109,4 +109,7 @@ more of them. The reply to the caller is unchanged: still 401 or 400, never 429.
 
 The budget is keyed on the peer address, not on `X-Forwarded-For`, which the caller
 writes. Behind a reverse proxy every caller therefore shares one budget: more records get
-folded than strictly need to be, and none are lost.
+folded than strictly need to be, and none are lost. An IPv6 peer is keyed by its /64, and
+the table holds at most 1024 sources with one shared bucket past that, so a caller who can
+vary its address cannot draw a fresh allowance per address. Graceful shutdown writes the
+summaries still pending, so a flood followed by a restart is accounted for too.

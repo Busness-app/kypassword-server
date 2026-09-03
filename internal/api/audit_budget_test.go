@@ -171,3 +171,94 @@ func TestAuditBudgetRefillsAndForgets(t *testing.T) {
 		t.Fatalf("sweep left %d idle sources behind", n)
 	}
 }
+
+// A caller with a routed IPv6 prefix controls every address in it. Keyed on the whole
+// address, the budget handed each one a fresh allowance and a fresh map entry, which
+// restores the fsync amplification it exists to bound and grows the table with the
+// address supply. The prefix is one source; past the table cap, everything unseen is one
+// source.
+//
+// Written first against whole-address keying, where the /64 case recorded all 200.
+func TestAuditBudgetIsBoundedAcrossAnIPv6Prefix(t *testing.T) {
+	const flood = 200
+	srv := newTestServer(t)
+	handler := srv.Routes()
+
+	for i := 0; i < flood; i++ {
+		r := httptest.NewRequest(http.MethodPost, "/api/devices/pairing/redeem",
+			strings.NewReader(`{"codeOrPin":"000000","deviceName":"d","platform":"p"}`))
+		// One /64, a different interface identifier every time.
+		r.RemoteAddr = fmt.Sprintf("[2001:db8:1:2::%x]:4000", i+1)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, r)
+	}
+
+	byAction, _ := auditTally(t, srv)
+	if got := byAction["device.pairing_failed"]; got > auditBudgetBurst {
+		t.Fatalf("%d of %d rejections from one /64 were recorded one by one; the budget allows %d", got, flood, auditBudgetBurst)
+	}
+	srv.rejects.mu.Lock()
+	n := len(srv.rejects.sources)
+	srv.rejects.mu.Unlock()
+	if n != 1 {
+		t.Fatalf("one /64 occupies %d table entries, want 1", n)
+	}
+}
+
+func TestAuditBudgetTableIsCapped(t *testing.T) {
+	b := newAuditBudget(time.Minute, 2)
+	for i := 0; i < 3*auditBudgetMaxSources; i++ {
+		b.take(fmt.Sprintf("10.%d.%d.%d", i>>16&255, i>>8&255, i&255))
+	}
+	b.mu.Lock()
+	n, overflow := len(b.sources), b.sources[auditBudgetOverflow]
+	b.mu.Unlock()
+	if n > auditBudgetMaxSources+1 {
+		t.Fatalf("table holds %d sources, cap is %d plus the shared bucket", n, auditBudgetMaxSources)
+	}
+	if overflow == nil {
+		t.Fatal("sources past the cap were not folded into the shared bucket")
+	}
+	// The overflow bucket is one budget: 2 recorded, the rest counted.
+	if overflow.recorded != 2 || overflow.suppressed != int64(2*auditBudgetMaxSources-2) {
+		t.Fatalf("shared bucket recorded=%d suppressed=%d", overflow.recorded, overflow.suppressed)
+	}
+}
+
+// "Folded, not dropped" has to hold on the shutdown path operators use. Close stopped
+// the flush and returned, and a window's worth of suppressed counts per source went
+// with the process -- including a flood that ended right before the restart.
+//
+// Written first against the non-flushing Close, where no summary appeared.
+func TestCloseFlushesTheFoldedCounts(t *testing.T) {
+	const flood = 50
+	srv := newTestServer(t)
+	handler := srv.Routes()
+
+	for i := 0; i < flood; i++ {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/devices/pairing/redeem",
+			strings.NewReader(`{"codeOrPin":"000000","deviceName":"d","platform":"p"}`)))
+	}
+	byAction, summaries := auditTally(t, srv)
+	recorded := byAction["device.pairing_failed"]
+	if len(summaries) != 0 {
+		t.Fatalf("a summary was written before any window passed: %v", summaries)
+	}
+
+	srv.Close()
+
+	_, summaries = auditTally(t, srv)
+	if len(summaries) != 1 {
+		t.Fatalf("Close wrote %d summaries, want 1", len(summaries))
+	}
+	if want := fmt.Sprintf("%d rejections", flood-recorded); !strings.Contains(summaries[0], want) {
+		t.Fatalf("summary %q does not account for the %d suppressed rejections", summaries[0], flood-recorded)
+	}
+
+	// Once. The t.Cleanup Close must not write a second summary.
+	srv.Close()
+	if _, again := auditTally(t, srv); len(again) != 1 {
+		t.Fatalf("closing twice produced %d summaries", len(again))
+	}
+}

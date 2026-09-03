@@ -18,6 +18,14 @@ const (
 	// rate an attacker can sustain.
 	auditBudgetWindow = time.Minute
 	auditBudgetBurst  = 20
+
+	// auditBudgetMaxSources caps the table. A caller who can vary its source address --
+	// a routed IPv6 prefix is the ordinary case, and sourceKey folds one /64 for that
+	// reason -- would otherwise draw a fresh full allowance and a fresh map entry per
+	// address until the next sweep. Past the cap, unseen sources share one bucket, so
+	// both the record rate and the table stay bounded whatever the address supply.
+	auditBudgetMaxSources = 1024
+	auditBudgetOverflow   = "overflow"
 )
 
 // auditBudget bounds the audit-write cost one network source can impose with requests
@@ -67,6 +75,10 @@ func (b *auditBudget) take(src string) (record bool, folded int64) {
 
 	now := b.now()
 	s := b.sources[src]
+	if s == nil && len(b.sources) >= auditBudgetMaxSources {
+		src = auditBudgetOverflow
+		s = b.sources[src]
+	}
 	if s == nil {
 		s = &budgetSource{windowStart: now}
 		b.sources[src] = s
@@ -91,13 +103,23 @@ func (b *auditBudget) take(src string) (record bool, folded int64) {
 // vanishing because more of them were generated. Forgetting idle sources is also what
 // keeps the map from growing without bound.
 func (b *auditBudget) sweep() map[string]int64 {
+	return b.collect(false)
+}
+
+// drain is sweep for every source, window passed or not. Shutdown is its caller: no
+// further window will open, so anything still counted would otherwise go with the process.
+func (b *auditBudget) drain() map[string]int64 {
+	return b.collect(true)
+}
+
+func (b *auditBudget) collect(all bool) map[string]int64 {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
 	now := b.now()
 	var out map[string]int64
 	for src, s := range b.sources {
-		if now.Sub(s.windowStart) < b.window {
+		if !all && now.Sub(s.windowStart) < b.window {
 			continue
 		}
 		if s.suppressed > 0 {
@@ -116,12 +138,20 @@ func (b *auditBudget) sweep() map[string]int64 {
 // a fresh value per request would draw a fresh allowance every time. Behind a reverse
 // proxy every caller shares one budget, which folds more records than it needs to but
 // still loses none of them.
+//
+// An IPv6 peer is keyed by its /64. That is the allocation a single host ordinarily
+// controls in full, so keying on the whole address would let one host draw a fresh
+// allowance per address it invents. TestAuditBudgetIsBoundedAcrossAnIPv6Prefix.
 func sourceKey(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr
 	}
-	return host
+	ip := net.ParseIP(host)
+	if ip == nil || ip.To4() != nil {
+		return host
+	}
+	return ip.Mask(net.CIDRMask(64, 128)).String() + "/64"
 }
 
 // recordAnonymousRejection records a rejection an unauthenticated caller caused, within
@@ -166,11 +196,17 @@ func (s *Server) flushOnce() {
 	}
 }
 
-// Close stops the background flush and waits for it, so a caller about to take the data
-// directory away is not racing a summary write. Safe to call more than once.
+// Close stops the background flush and waits for it, then writes the summaries still
+// held: no further window will open, so a count left in memory would go with the
+// process, and "folded, not dropped" has to hold on the shutdown path operators use.
+// A caller about to take the data directory away is therefore not racing any write
+// once Close returns. Safe to call more than once. TestCloseFlushesTheFoldedCounts.
 func (s *Server) Close() {
 	s.closeOnce.Do(func() {
 		close(s.flushStop)
 		<-s.flushDone
+		for src, n := range s.rejects.drain() {
+			s.recordSuppressed(context.Background(), src, n)
+		}
 	})
 }
