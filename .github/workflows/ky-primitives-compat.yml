@@ -41,11 +41,15 @@ jobs:
           path: ky-primitives
           persist-credentials: false
 
+      # No cache. This job runs go test on an unreviewed default branch of another
+      # repository, and setup-go's post-step would save the module and build caches that
+      # code wrote into the default-branch scope every push and pull_request job of ci.yml
+      # restores from. A job running unreviewed code does not share a cache namespace with
+      # a merge gate; it runs once a day and can build cold.
       - uses: actions/setup-go@v7
         with:
           go-version-file: consumer/go.mod
-          cache: true
-          cache-dependency-path: consumer/go.sum
+          cache: false
 
       - name: Point this repository at that checkout
         working-directory: consumer
