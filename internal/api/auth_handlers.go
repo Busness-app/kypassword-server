@@ -179,7 +179,7 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "failed to link account: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-		_, _ = s.audit.Log("auth.sso_linked", linkUserID, "", clientIP(r), "linked SSO subject "+claims.Sub)
+		s.record(r, "auth.sso_linked", linkUserID, "", clientIP(r), "linked SSO subject "+claims.Sub)
 		http.Redirect(w, r, "/#sso=linked", http.StatusFound)
 		return
 	}
@@ -220,7 +220,7 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		user = createdUser
-		_, _ = s.audit.Log("auth.sso_provisioned", user.ID, "", clientIP(r), "auto-provisioned user via SSO")
+		s.record(r, "auth.sso_provisioned", user.ID, "", clientIP(r), "auto-provisioned user via SSO")
 	}
 
 	if !user.Active {
@@ -233,7 +233,7 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, _ = s.audit.Log("auth.sso_login", user.ID, "", clientIP(r), "signed in via SSO")
+	s.record(r, "auth.sso_login", user.ID, "", clientIP(r), "signed in via SSO")
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 
@@ -261,10 +261,28 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request, u users.Us
 		MaxAge:   -1,
 	})
 
-	_, _ = s.audit.Log("auth.logout", u.ID, "", clientIP(r), "logged out")
+	s.record(r, "auth.logout", u.ID, "", clientIP(r), "logged out")
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+// handleHealth is what the container healthcheck polls. It takes no credential, so it
+// answers one thing: the process is up.
+//
+// Still 200 once an audit write has failed, and still not 503. There is nothing here to
+// shed an instance to — docker-compose.yml runs one container with
+// `restart: unless-stopped` and no orchestrator, and plain Compose does not act on an
+// unhealthy container at all. The audit-failure counter is sticky, so 503 turned one
+// transient audit-write failure into a vault that stays out of service until a human
+// restarts it; behind Traefik or Kubernetes that is a full DATA_DIR becoming a credential
+// lockout, which is worse than the record that was lost.
+//
+// It no longer says "degraded" either, and that is secrecy rather than tidiness:
+// "degraded" has one cause in this server, so the string let an anonymous caller watch
+// for the moment audit writes began failing — confirmation that a disk they were filling
+// was full. The operator signal is the "AUDIT WRITE FAILED" line on stderr with its count
+// and cause; the machine-readable one is GET /api/audit/verify, which is admin-only and
+// carries writeFailures. TestFailedAuditWriteIsReportedOnlyToAnAdmin pins the status
+// code, the body that does not change, and the count behind auth.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":  "ok",

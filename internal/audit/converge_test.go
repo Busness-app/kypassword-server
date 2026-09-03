@@ -31,7 +31,7 @@ func TestEntriesVerifyUnderSharedPackage(t *testing.T) {
 		t.Fatalf("NewStore failed: %v", err)
 	}
 	for _, action := range []string{"auth.login", "vault.upload", "vault.download"} {
-		if _, err := store.Log(action, "user1", "dev1", "127.0.0.1", action); err != nil {
+		if _, err := store.Log(t.Context(), action, "user1", "dev1", "127.0.0.1", action); err != nil {
 			t.Fatalf("Log failed: %v", err)
 		}
 	}
@@ -54,7 +54,7 @@ func TestExportedChainVerifiesWithSharedPackageAlone(t *testing.T) {
 		t.Fatalf("NewStore failed: %v", err)
 	}
 	for i := 0; i < 3; i++ {
-		if _, err := store.Log("auth.login", "user1", "dev1", "127.0.0.1", "x"); err != nil {
+		if _, err := store.Log(t.Context(), "auth.login", "user1", "dev1", "127.0.0.1", "x"); err != nil {
 			t.Fatalf("Log failed: %v", err)
 		}
 	}

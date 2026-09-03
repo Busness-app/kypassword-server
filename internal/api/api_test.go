@@ -2,13 +2,17 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Busness-app/kypassword-server/internal/sso"
@@ -35,6 +39,14 @@ func newTestServerWithUsers(t *testing.T, usersJSON string) *Server {
 		}
 	}
 
+	srv, _ := newServerIn(t, dir)
+	return srv
+}
+
+// newServerIn builds a server rooted at dir and hands back its data directory, which
+// the tests that have to break the audit log need in order to find it.
+func newServerIn(t *testing.T, dir string) (*Server, string) {
+	t.Helper()
 	srv, err := NewServer(Config{
 		DataDir:       dir + "/data",
 		ConfigDir:     dir + "/config",
@@ -44,7 +56,9 @@ func newTestServerWithUsers(t *testing.T, usersJSON string) *Server {
 	if err != nil {
 		t.Fatalf("NewServer failed: %v", err)
 	}
-	return srv
+	// Stops the background audit flush before t.TempDir removes what it writes to.
+	t.Cleanup(srv.Close)
+	return srv, dir + "/data"
 }
 
 // signedInUser provisions an account the way KySignOn would and returns it with a session
@@ -311,5 +325,129 @@ func TestAuditLogIntegrity(t *testing.T) {
 	_ = json.NewDecoder(rec.Body).Decode(&verifyResp)
 	if verifyResp["valid"] != true {
 		t.Errorf("expected valid audit chain: %+v", verifyResp)
+	}
+}
+
+// A client that hangs up after the handler has already acted must not take its audit
+// record with it. r.Context() dies the instant the connection does and handlers log
+// last, so honouring that cancellation meant an aborted request left no trace at all,
+// with the same HTTP status and a chain that still verified clean.
+func TestAbortedRequestStillRecordsTheAudit(t *testing.T) {
+	srv := newTestServer(t)
+	_, cookie := signedInUser(t, srv, "admin", users.RoleAdmin)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // the client is already gone
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/logout", nil).WithContext(ctx)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /api/auth/logout status = %d, want 200", rec.Code)
+	}
+
+	entries, err := srv.audit.List(0)
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	logged := false
+	for _, e := range entries {
+		if e.Action == "auth.logout" {
+			logged = true
+		}
+	}
+	if !logged {
+		t.Fatalf("the aborted request logged out but left no audit record: %+v", entries)
+	}
+	if ok, err := srv.audit.VerifyIntegrity(); !ok || err != nil {
+		t.Fatalf("audit chain does not verify: ok=%v, err=%v", ok, err)
+	}
+}
+
+// A failed audit write must not vanish. This is a password vault: an instance that
+// keeps accepting privileged operations while recording none of them is the state an
+// attacker wants it in, and until now every call site discarded the error, so nothing
+// said a word until a later restart refused to boot.
+//
+// The request still succeeds. The operation it is recording has already happened, so a
+// 500 would not undo it — it would ask the client to retry something the server has
+// already done, and the retry would be just as unrecorded. What changes is that the
+// failure is reported: on stderr, in the health body, and to an admin asking whether
+// the trail is sound.
+//
+// Health stays 200 in both states. A sticky counter wired to 503 is a credential vault
+// that takes itself out of service for one transient write failure and stays there
+// until a human restarts it; both status codes are asserted here so that trade is a
+// decision rather than an accident.
+//
+// The audit log path is made a directory rather than the directory made read-only,
+// because root writes into a read-only directory whatever its mode says. O_WRONLY on a
+// directory is EISDIR for every uid, so this test has no skip.
+func TestFailedAuditWriteIsReportedOnlyToAnAdmin(t *testing.T) {
+	srv, dataDir := newServerIn(t, t.TempDir())
+	_, cookie := signedInUser(t, srv, "dana", users.RoleAdmin)
+	handler := srv.Routes()
+
+	health := func() (int, string) {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/health", nil))
+		var body struct {
+			Status string `json:"status"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("health body %q: %v", rec.Body.String(), err)
+		}
+		return rec.Code, body.Status
+	}
+	if code, status := health(); code != http.StatusOK || status != "ok" {
+		t.Fatalf(`GET /api/health = %d %q with a working audit log, want 200 "ok"`, code, status)
+	}
+
+	// A log the append cannot open, which a full or broken volume also produces. The
+	// store is already constructed, so this is a write-time failure, not a boot one.
+	logPath := filepath.Join(dataDir, "audit", "audit.jsonl")
+	if err := os.RemoveAll(logPath); err != nil {
+		t.Fatalf("RemoveAll: %v", err)
+	}
+	if err := os.Mkdir(logPath, 0700); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/logout", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /api/auth/logout = %d; the logout happened, so the client must not be told to retry it", rec.Code)
+	}
+	if !strings.Contains(logs.String(), "AUDIT WRITE FAILED") || !strings.Contains(logs.String(), "auth.logout") {
+		t.Fatalf("a failed audit write left no line an operator could see: %q", logs.String())
+	}
+	// 200 still — a full audit volume must not become a credential lockout — and the
+	// body must not have moved, because an anonymous caller reading a change here is
+	// reading confirmation that the disk they are filling is full.
+	if code, status := health(); code != http.StatusOK || status != "ok" {
+		t.Fatalf(`GET /api/health = %d %q after an audit write failed, want an unchanged 200 "ok"`, code, status)
+	}
+
+	// And the admin asking whether the trail is sound is told, which VerifyIntegrity
+	// alone cannot say: it only ever sees the records that were written.
+	_, adminCookie := signedInUser(t, srv, "auditor", users.RoleAdmin)
+	vreq := httptest.NewRequest(http.MethodGet, "/api/audit/verify", nil)
+	vreq.AddCookie(adminCookie)
+	vrec := httptest.NewRecorder()
+	handler.ServeHTTP(vrec, vreq)
+	var verify struct {
+		WriteFailures int64 `json:"writeFailures"`
+	}
+	if err := json.Unmarshal(vrec.Body.Bytes(), &verify); err != nil {
+		t.Fatalf("verify body %q: %v", vrec.Body.String(), err)
+	}
+	if verify.WriteFailures == 0 {
+		t.Fatalf("GET /api/audit/verify reported no lost records after a failed write: %s", vrec.Body.String())
 	}
 }

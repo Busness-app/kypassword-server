@@ -41,7 +41,7 @@ func (s *Server) handleVaultDownload(w http.ResponseWriter, r *http.Request, u u
 	w.Header().Set("X-Vault-Checksum", meta.Checksum)
 
 	_, _ = io.Copy(w, rc)
-	_, _ = s.audit.Log("vault.download", u.ID, "", clientIP(r), fmt.Sprintf("downloaded vault v%d", meta.Version))
+	s.record(r, "vault.download", u.ID, "", clientIP(r), fmt.Sprintf("downloaded vault v%d", meta.Version))
 }
 
 type VaultUploadRequest struct {
@@ -101,7 +101,7 @@ func (s *Server) handleVaultUpload(w http.ResponseWriter, r *http.Request, u use
 	if err != nil {
 		var confErr *vault.ConflictError
 		if errors.As(err, &confErr) {
-			_, _ = s.audit.Log("vault.conflict_rejected", u.ID, devID, clientIP(r), confErr.Error())
+			s.record(r, "vault.conflict_rejected", u.ID, devID, clientIP(r), confErr.Error())
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusConflict)
 			_ = json.NewEncoder(w).Encode(confErr)
@@ -111,7 +111,7 @@ func (s *Server) handleVaultUpload(w http.ResponseWriter, r *http.Request, u use
 		return
 	}
 
-	_, _ = s.audit.Log("vault.saved", u.ID, devID, clientIP(r), fmt.Sprintf("saved vault v%d", meta.Version))
+	s.record(r, "vault.saved", u.ID, devID, clientIP(r), fmt.Sprintf("saved vault v%d", meta.Version))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":       true,
 		"metadata": meta,
@@ -134,7 +134,7 @@ func (s *Server) handleVaultEnvelopes(w http.ResponseWriter, r *http.Request, u 
 		return
 	}
 
-	_, _ = s.audit.Log("vault.envelopes_updated", u.ID, "", clientIP(r), "updated key envelopes")
+	s.record(r, "vault.envelopes_updated", u.ID, "", clientIP(r), "updated key envelopes")
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -160,7 +160,7 @@ func (s *Server) handleVaultHistoryRestore(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	_, _ = s.audit.Log("vault.restored_snapshot", u.ID, "", clientIP(r), fmt.Sprintf("restored snapshot %s to v%d", id, meta.Version))
+	s.record(r, "vault.restored_snapshot", u.ID, "", clientIP(r), fmt.Sprintf("restored snapshot %s to v%d", id, meta.Version))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":       true,
 		"metadata": meta,
@@ -188,6 +188,6 @@ func (s *Server) handleVaultConflictDiscard(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	_, _ = s.audit.Log("vault.conflict_discarded", u.ID, "", clientIP(r), "discarded conflict "+id)
+	s.record(r, "vault.conflict_discarded", u.ID, "", clientIP(r), "discarded conflict "+id)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }

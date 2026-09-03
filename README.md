@@ -55,7 +55,14 @@ over anything saved in `config/sso.json`. The admin UI will refuse to overwrite 
 | `CONFIG_DIR` | no | defaults to `./config` — `users.json`, `sso.json`, pairing secret, audit key and chain state |
 | `RETENTION_DAYS` | no | defaults to `90` |
 | `PAIRING_SECRET` | no | generated into `CONFIG_DIR/pairing.secret` if unset |
-| `AUDIT_KEY` | no | hex, 32+ bytes; generated into `CONFIG_DIR/audit.key` if unset |
+| `AUDIT_KEY` | no | exactly 32 bytes, as 64 hex characters or standard base64; generated into `CONFIG_DIR/audit.key` if unset |
+
+`AUDIT_KEY` is 32 bytes exactly — not a minimum. A longer value is refused at startup
+rather than shortened, because a key half of which is silently discarded is a key two
+installs can disagree about. It is the same length `CONFIG_DIR/audit.key` holds, so an
+existing install can move its key into the environment by copying that file's contents.
+Changing the value orphans the existing chain: the records were signed under the old key
+and nothing can verify them under the new one.
 
 All three OIDC values must be set together. A partially set environment is treated as
 unset, so that a typo cannot silently produce a configuration that is half environment and
@@ -69,7 +76,13 @@ working first, or nobody can get in.
 The server will not start without an identity provider. It could authenticate nobody, and
 there is no local administrator who could fix it from the UI.
 
-## Upgrading from a version with local accounts
+## Upgrading
+
+The audit chain also refuses to start in cases an older version started in, and the
+`AUDIT_KEY` length is now exact. [CHANGELOG.md](CHANGELOG.md) lists each condition and
+what to do about it; read it before upgrading, not at the failed startup.
+
+### From a version with local accounts
 
 The server refuses to start while any **active** account has no KySignOn identity, and
 names them:

@@ -1,13 +1,16 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Busness-app/kypassword-server/internal/audit"
@@ -31,6 +34,20 @@ type Server struct {
 	audit         *audit.Store
 	ssoStore      *sso.Store
 	pairingSecret string
+
+	// auditFailures counts audit writes that did not reach the log. Sticky: the
+	// missing record never comes back, so only a restart — after someone has
+	// looked — clears it. It is reported, never acted on: see handleHealth for why
+	// a sticky counter must not be allowed to take a credential vault out of service.
+	auditFailures atomic.Int64
+
+	// rejects bounds the audit writes an unauthenticated caller can cause, and
+	// flushStop/flushDone run the periodic flush that keeps the folded ones from
+	// being lost. See audit_budget.go.
+	rejects   *auditBudget
+	flushStop chan struct{}
+	flushDone chan struct{}
+	closeOnce sync.Once
 
 	sessMu   sync.RWMutex
 	sessions map[string]Session // token -> Session
@@ -86,7 +103,11 @@ func NewServer(cfg Config) (*Server, error) {
 		ssoStore:      ssoSt,
 		pairingSecret: cfg.PairingSecret,
 		sessions:      make(map[string]Session),
+		rejects:       newAuditBudget(auditBudgetWindow, auditBudgetBurst),
+		flushStop:     make(chan struct{}),
+		flushDone:     make(chan struct{}),
 	}
+	go s.flushSuppressed()
 
 	return s, nil
 }
@@ -157,6 +178,40 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// record writes an audit entry and makes a failed write impossible to miss.
+//
+// It does not fail the request. Every call site records an operation the server has
+// already carried out, so a 500 would not undo it — it would ask the client to retry
+// something that already happened, and the retry would be just as unrecorded. Several
+// call sites record a rejection — sync.rejected, device.pairing_failed — where a 500
+// would turn "you are not authorised" into "the server is broken" and tell an attacker
+// the log is down.
+//
+// What a lost record does change is what the operator and the auditor are told. The
+// failure goes to stderr with its cause and the running count, and GET /api/audit/verify
+// — which is admin-only, and the one place someone asks whether the trail is sound —
+// carries the count, because VerifyIntegrity cannot see a record that never reached the
+// log. GET /api/health does not carry it: it takes no credential, and a caller filling
+// the disk must not be able to watch the filling work.
+// TestFailedAuditWriteIsReportedOnlyToAnAdmin pins all three.
+//
+// Rejections recorded before any credential is checked go through
+// recordAnonymousRejection instead, which bounds what they cost.
+func (s *Server) record(r *http.Request, action, userID, deviceID, ip, details string) {
+	s.recordCtx(r.Context(), action, userID, deviceID, ip, details)
+}
+
+// recordCtx is record for a call site that has no request — the periodic flush.
+func (s *Server) recordCtx(ctx context.Context, action, userID, deviceID, ip, details string) {
+	if _, err := s.audit.Log(ctx, action, userID, deviceID, ip, details); err != nil {
+		n := s.auditFailures.Add(1)
+		// details is left out on purpose: it carries operation content, and both the
+		// audit records and these logs are content-blind.
+		log.Printf("AUDIT WRITE FAILED (%d since start) action=%s user=%s device=%s ip=%s: %v",
+			n, action, userID, deviceID, ip, err)
+	}
 }
 
 // writeJSON formats and sends a JSON response.
