@@ -190,6 +190,18 @@ func (s *Store) ListUserDevices(userID string) []Device {
 	return result
 }
 
+// Snapshot returns registered devices only. Pairing PINs are intentionally
+// ephemeral and must not survive a restore.
+func (s *Store) Snapshot() ([]byte, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	list := make([]Device, 0, len(s.devices))
+	for _, d := range s.devices {
+		list = append(list, d)
+	}
+	return json.MarshalIndent(list, "", "  ")
+}
+
 // Get finds a device by ID.
 func (s *Store) Get(deviceID string) (Device, error) {
 	s.mu.RLock()

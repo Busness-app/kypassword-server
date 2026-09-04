@@ -69,6 +69,12 @@ func (s *Store) Load() SSOSettings {
 	return s.settings
 }
 
+// Snapshot serializes the effective settings. Environment settings take
+// precedence over a stale sso.json and must be recoverable from the sealed capsule.
+func (s *Store) Snapshot() ([]byte, error) {
+	return json.MarshalIndent(s.Load(), "", "  ")
+}
+
 // Save persists new SSOSettings to disk atomically.
 func (s *Store) Save(settings SSOSettings) error {
 	s.mu.Lock()

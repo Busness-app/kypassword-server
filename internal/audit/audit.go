@@ -87,6 +87,32 @@ type Store struct {
 	anchor    auditchain.Anchor
 }
 
+// Snapshot is a lock-consistent copy of the three files needed to resume and
+// verify the audit chain. Key is the effective in-memory key, including when it
+// came from AUDIT_KEY rather than audit.key on disk.
+type Snapshot struct {
+	Log   []byte
+	State []byte
+	Key   []byte
+}
+
+func (s *Store) Snapshot() (Snapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	logData, err := os.ReadFile(s.filePath)
+	if errors.Is(err, os.ErrNotExist) {
+		logData = []byte{}
+	} else if err != nil {
+		return Snapshot{}, err
+	}
+	stateData, err := os.ReadFile(s.statePath)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	return Snapshot{Log: logData, State: stateData, Key: bytes.Clone(s.key)}, nil
+}
+
 // legacyHash is the keyed digest this server used before the chain moved to the
 // shared format. It joined the fields with a bare "|", so content carrying the
 // delimiter could be shifted into a neighbouring field without changing the digest.

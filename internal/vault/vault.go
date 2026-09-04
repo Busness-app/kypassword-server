@@ -79,6 +79,82 @@ type Store struct {
 	retentionDays int
 }
 
+// SnapshotFile is one immutable vault-store member captured for a recovery capsule.
+type SnapshotFile struct {
+	Path string
+	Data []byte
+	Mode os.FileMode
+}
+
+// Snapshot captures the encrypted vault tree while writes and retention pruning are
+// stopped. It validates the current metadata/KDBX pair before returning; the server
+// cannot safely restore a metadata checksum from one generation beside another
+// generation's ciphertext.
+func (s *Store) Snapshot() ([]SnapshotFile, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var files []SnapshotFile
+	err := filepath.WalkDir(s.baseDir, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("vault snapshot refuses symlink %s", path)
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if !entry.Type().IsRegular() || strings.HasSuffix(entry.Name(), ".tmp") {
+			return nil
+		}
+		rel, err := filepath.Rel(s.baseDir, path)
+		if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("vault snapshot path escapes base directory: %s", path)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		files = append(files, SnapshotFile{Path: filepath.ToSlash(rel), Data: data, Mode: info.Mode().Perm()})
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	byPath := make(map[string][]byte, len(files))
+	for _, file := range files {
+		byPath[file.Path] = file.Data
+	}
+	for path, data := range byPath {
+		if filepath.Base(path) != "metadata.json" {
+			continue
+		}
+		var meta Metadata
+		if err := json.Unmarshal(data, &meta); err != nil {
+			return nil, fmt.Errorf("parse %s: %w", path, err)
+		}
+		if meta.Version == 0 {
+			continue
+		}
+		vaultPath := filepath.ToSlash(filepath.Join(filepath.Dir(path), "vault.kdbx"))
+		ciphertext, ok := byPath[vaultPath]
+		if !ok {
+			return nil, fmt.Errorf("%s names vault version %d but %s is missing", path, meta.Version, vaultPath)
+		}
+		sum := sha256.Sum256(ciphertext)
+		if got := hex.EncodeToString(sum[:]); got != meta.Checksum || int64(len(ciphertext)) != meta.SizeBytes {
+			return nil, fmt.Errorf("%s does not match %s checksum or size", path, vaultPath)
+		}
+	}
+	return files, nil
+}
+
 // NewStore initializes the vault manager.
 func NewStore(baseDir string, retentionDays int) (*Store, error) {
 	if retentionDays <= 0 {
@@ -489,6 +565,9 @@ func (s *Store) DiscardConflict(userID, conflictID string) error {
 }
 
 func (s *Store) pruneOldHistory(userID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	cutoff := time.Now().AddDate(0, 0, -s.retentionDays)
 	hDir := s.historyDir(userID)
 

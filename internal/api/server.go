@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Busness-app/kypassword-server/internal/audit"
+	"github.com/Busness-app/kypassword-server/internal/backup"
 	"github.com/Busness-app/kypassword-server/internal/devices"
 	"github.com/Busness-app/kypassword-server/internal/sso"
 	"github.com/Busness-app/kypassword-server/internal/users"
@@ -33,6 +35,9 @@ type Server struct {
 	devices       *devices.Store
 	audit         *audit.Store
 	ssoStore      *sso.Store
+	backupState   *backup.StateStore
+	backupService *backup.Service
+	recovery      backup.RecoveryClient
 	pairingSecret string
 
 	// auditFailures counts audit writes that did not reach the log. Sticky: the
@@ -59,6 +64,7 @@ type Config struct {
 	ConfigDir     string
 	PairingSecret string
 	RetentionDays int
+	AppVersion    string
 }
 
 // NewServer constructs the KyPassword Server.
@@ -71,6 +77,9 @@ func NewServer(cfg Config) (*Server, error) {
 	}
 	if cfg.RetentionDays <= 0 {
 		cfg.RetentionDays = 90
+	}
+	if cfg.AppVersion == "" {
+		cfg.AppVersion = "dev"
 	}
 
 	uStore, err := users.NewStore(cfg.ConfigDir)
@@ -94,6 +103,13 @@ func NewServer(cfg Config) (*Server, error) {
 	}
 
 	ssoSt := sso.NewStore(cfg.ConfigDir)
+	backupState := backup.NewStateStore(cfg.ConfigDir)
+	recovery := backup.NewClient()
+	collector := backup.Collector{
+		Vault: vStore, Audit: aStore, Users: uStore, Devices: dStore, SSO: ssoSt,
+		State: backupState, PairingSecret: cfg.PairingSecret, RetentionDays: cfg.RetentionDays,
+		AppVersion: cfg.AppVersion,
+	}
 
 	s := &Server{
 		users:         uStore,
@@ -101,12 +117,15 @@ func NewServer(cfg Config) (*Server, error) {
 		devices:       dStore,
 		audit:         aStore,
 		ssoStore:      ssoSt,
+		backupState:   backupState,
+		recovery:      recovery,
 		pairingSecret: cfg.PairingSecret,
 		sessions:      make(map[string]Session),
 		rejects:       newAuditBudget(auditBudgetWindow, auditBudgetBurst),
 		flushStop:     make(chan struct{}),
 		flushDone:     make(chan struct{}),
 	}
+	s.backupService = &backup.Service{State: backupState, Collector: collector, Client: recovery}
 	go s.flushSuppressed()
 
 	return s, nil
@@ -161,6 +180,11 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("PUT /api/admin/sso", s.withAdmin(s.handleAdminSSOPut))
 	mux.HandleFunc("GET /api/audit", s.withAdmin(s.handleAuditList))
 	mux.HandleFunc("GET /api/audit/verify", s.withAdmin(s.handleAuditVerify))
+	mux.HandleFunc("POST /api/backup/drill", s.withAdmin(s.handleBackupDrill))
+	mux.HandleFunc("GET /api/backup/export-capsule", s.withAdmin(s.handleExportCapsule))
+	mux.HandleFunc("POST /api/backup/pair-remote", s.withAdmin(s.handlePairRemoteRecovery))
+	mux.HandleFunc("POST /api/backup/deposit", s.withAdmin(s.handleDepositBackup))
+	mux.HandleFunc("GET /api/backup/status", s.withAdmin(s.handleBackupStatus))
 
 	return s.corsMiddleware(mux)
 }
@@ -318,6 +342,25 @@ func (s *Server) currentUser(r *http.Request) (users.User, bool) {
 	}
 
 	return u, true
+}
+
+// validCSRF protects cookie-authenticated state changes. Bearer callers are not
+// vulnerable to ambient-cookie CSRF and do not need the browser token.
+func (s *Server) validCSRF(r *http.Request) bool {
+	sessionCookie, err := r.Cookie("kypass_session")
+	if err != nil || sessionCookie.Value == "" {
+		return strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ")
+	}
+	csrfCookie, err := r.Cookie("csrf_token")
+	if err != nil || csrfCookie.Value == "" {
+		return false
+	}
+	s.sessMu.RLock()
+	session, ok := s.sessions[sessionCookie.Value]
+	s.sessMu.RUnlock()
+	header := r.Header.Get("X-CSRF-Token")
+	return ok && subtle.ConstantTimeCompare([]byte(header), []byte(csrfCookie.Value)) == 1 &&
+		subtle.ConstantTimeCompare([]byte(header), []byte(session.CSRFToken)) == 1
 }
 
 // withAuth enforces authenticated session.

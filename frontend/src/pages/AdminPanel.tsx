@@ -1,6 +1,7 @@
 import React, { useState, useEffect, FormEvent } from "react";
 import { getJSON, postJSON, putJSON, toErrorMessage } from "../lib/api";
-import { Users, Shield, ScrollText, CheckCircle2, AlertCircle, ShieldCheck } from "lucide-react";
+import { Users, Shield, ScrollText, CheckCircle2, AlertCircle, ShieldCheck, ArchiveRestore } from "lucide-react";
+import { AdminBackup } from "../components/AdminBackup";
 
 type User = {
   id: string;
@@ -30,7 +31,7 @@ type AuditEntry = {
 };
 
 export function AdminPanel() {
-  const [activeTab, setActiveTab] = useState<"sso" | "users" | "audit">("sso");
+  const [activeTab, setActiveTab] = useState<"sso" | "users" | "audit" | "backup">("sso");
   const [usersList, setUsersList] = useState<User[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditEntry[]>([]);
   const [auditValid, setAuditValid] = useState<boolean | null>(null);
@@ -136,6 +137,12 @@ export function AdminPanel() {
           onClick={() => setActiveTab("audit")}
         >
           <ScrollText size={16} /> Tamper-Evident Audit Log
+        </button>
+        <button
+          className={`nav-link-btn ${activeTab === "backup" ? "active" : ""}`}
+          onClick={() => setActiveTab("backup")}
+        >
+          <ArchiveRestore size={16} /> Backup &amp; Recovery
         </button>
       </div>
 
@@ -302,6 +309,8 @@ export function AdminPanel() {
           </div>
 
         </div>
+      ) : activeTab === "backup" ? (
+        <AdminBackup />
       ) : (
         <div>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem" }}>
