@@ -22,6 +22,18 @@ const migrationUsage = `KyPassword migration commands:
   kypassword-server deactivate --username <name>
         Retire an account that has no KySignOn identity. Its vault is kept.
 
+  kypassword-server backup-drill
+        Seal and open a throwaway recovery capsule, then validate its contents.
+
+  kypassword-server export-capsule [--out <path>]
+        Write a recovery-key-sealed capsule without overwriting an existing file.
+
+  kypassword-server deposit
+        Seal and upload a capsule to the paired KyRecovery service.
+
+  kypassword-server restore --capsule <path> --to <empty-directory>
+        Restore a capsule using custodian shares read from standard input.
+
 The KySignOn user ID is the value shown in the KySignOn admin user list, and is the
 same value KySignOn puts in the OIDC 'sub' claim.
 `
@@ -37,6 +49,8 @@ func runMigrationCommand(args []string, out io.Writer) (handled bool, err error)
 		return true, runLinkSSO(configDirFromEnv(), args[1:], out)
 	case "deactivate":
 		return true, runDeactivate(configDirFromEnv(), args[1:], out)
+	case "backup-drill", "export-capsule", "deposit", "restore":
+		return true, runBackupCommand(args[0], args[1:], out)
 	case "help", "-h", "--help":
 		fmt.Fprint(out, migrationUsage)
 		return true, nil

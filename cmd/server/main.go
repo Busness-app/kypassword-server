@@ -5,11 +5,13 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"syscall"
 	"time"
@@ -38,6 +40,11 @@ func main() {
 	}
 
 	configDir := configDirFromEnv()
+	lock, err := acquireInstanceLock(configDir)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer lock.Close()
 
 	requireMigratedAccounts(configDir)
 	requireIdentityProvider(configDir)
@@ -47,6 +54,10 @@ func main() {
 		if val, err := strconv.Atoi(r); err == nil && val > 0 {
 			retentionDays = val
 		}
+	}
+	depositInterval, err := backupDepositInterval(os.Getenv("KYPASSWORD_BACKUP_DEPOSIT_INTERVAL"))
+	if err != nil {
+		log.Fatalf("KYPASSWORD_BACKUP_DEPOSIT_INTERVAL: %v", err)
 	}
 
 	pairingSecret := os.Getenv("PAIRING_SECRET")
@@ -68,6 +79,7 @@ func main() {
 		ConfigDir:     configDir,
 		PairingSecret: pairingSecret,
 		RetentionDays: retentionDays,
+		AppVersion:    buildVersion(),
 	})
 	if err != nil {
 		log.Fatalf("failed to initialize server: %v", err)
@@ -126,16 +138,61 @@ func main() {
 		}
 	}()
 
+	schedulerCtx, stopScheduler := context.WithCancel(context.Background())
+	schedulerDone := make(chan struct{})
+	go func() {
+		defer close(schedulerDone)
+		if depositInterval == 0 {
+			return
+		}
+		ticker := time.NewTicker(depositInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-schedulerCtx.Done():
+				return
+			case <-ticker.C:
+				srv.RunScheduledDeposit(schedulerCtx)
+			}
+		}
+	}()
+
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	<-sigChan
+	stopScheduler()
 
 	log.Println("shutting down KyPassword server gracefully...")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = httpServer.Shutdown(ctx)
+	<-schedulerDone
+	srv.WaitForBackups()
 	srv.Close()
 	log.Println("server stopped.")
+}
+
+const minBackupDepositInterval = 15 * time.Minute
+
+func backupDepositInterval(value string) (time.Duration, error) {
+	if value == "" {
+		return 24 * time.Hour, nil
+	}
+	d, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, err
+	}
+	if d < 0 || d > 0 && d < minBackupDepositInterval {
+		return 0, fmt.Errorf("must be 0 or at least %s", minBackupDepositInterval)
+	}
+	return d, nil
+}
+
+func buildVersion() string {
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return info.Main.Version
+	}
+	return "dev"
 }
 
 // requireMigratedAccounts refuses to start while any active account has no KySignOn

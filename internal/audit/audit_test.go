@@ -67,6 +67,31 @@ func TestAuditLogAndVerify(t *testing.T) {
 	assertTamperDetected(t, dir, keyDir, "appended junk entry")
 }
 
+func TestSnapshotRefusesRuntimeTrailingGarbage(t *testing.T) {
+	dataDir, keyDir := t.TempDir(), t.TempDir()
+	store, err := NewStore(dataDir, keyDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Log(t.Context(), "backup.test", "user", "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.OpenFile(filepath.Join(dataDir, "audit.jsonl"), os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString("garbage"); err != nil {
+		file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Snapshot(); err == nil {
+		t.Fatal("snapshot accepted bytes after the authenticated audit chain")
+	}
+}
+
 // An attacker who can write the audit file rewrites a record and recomputes
 // every hash after it. An unkeyed chain accepts this; a keyed one must not.
 func TestForgedChainIsRejected(t *testing.T) {

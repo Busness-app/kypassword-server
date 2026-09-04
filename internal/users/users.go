@@ -238,6 +238,17 @@ func (s *Store) List() []User {
 	return list
 }
 
+// Snapshot returns the complete durable user document while writes are stopped.
+func (s *Store) Snapshot() ([]byte, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	list := make([]User, 0, len(s.users))
+	for _, u := range s.users {
+		list = append(list, u)
+	}
+	return json.MarshalIndent(list, "", "  ")
+}
+
 // LinkSSO attaches an SSO identity to a user.
 func (s *Store) LinkSSO(id, sub, username, email string) error {
 	s.mu.Lock()
