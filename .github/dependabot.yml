@@ -8,8 +8,14 @@ updates:
     commit-message:
       prefix: "chore(deps)"
     groups:
+      # The shared crypto library arrives in its own PR, reviewed against the
+      # capsule and recovery-key contract rather than batched with x/crypto.
+      # Prefix match, so a /v2 module path or a submodule stays in this group.
+      ky-primitives:
+        patterns: ["github.com/Busness-app/ky-primitives*"]
       go:
         patterns: ["*"]
+        exclude-patterns: ["github.com/Busness-app/ky-primitives*"]
 
   - package-ecosystem: npm
     directory: /frontend
