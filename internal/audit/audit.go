@@ -110,6 +110,17 @@ func (s *Store) Snapshot() (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
+	var state chainState
+	if err := json.Unmarshal(stateData, &state); err != nil {
+		return Snapshot{}, fmt.Errorf("snapshot audit state: %w", err)
+	}
+	if state.Count != s.anchor.Count || state.Hash != s.anchor.Hash {
+		return Snapshot{}, errors.New("snapshot audit state does not match the live chain anchor")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(logData))
+	if err := auditchain.VerifyStream(s.key, streamRecords(decoder), s.anchor); err != nil {
+		return Snapshot{}, fmt.Errorf("snapshot audit chain: %w", err)
+	}
 	return Snapshot{Log: logData, State: stateData, Key: bytes.Clone(s.key)}, nil
 }
 
@@ -756,21 +767,28 @@ func (s *Store) VerifyIntegrity() (bool, error) {
 	defer file.Close()
 
 	dec := json.NewDecoder(file)
-	err = auditchain.VerifyStream(s.key, func(yield func(auditchain.Record, error) bool) {
+	err = auditchain.VerifyStream(s.key, streamRecords(dec), s.anchor)
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func streamRecords(dec *json.Decoder) func(func(auditchain.Record, error) bool) {
+	return func(yield func(auditchain.Record, error) bool) {
 		for {
 			var e Entry
-			if derr := dec.Decode(&e); derr != nil {
+			if err := dec.Decode(&e); errors.Is(err, io.EOF) {
+				return
+			} else if err != nil {
+				yield(auditchain.Record{}, err)
 				return
 			}
 			if !yield(recordOf(e), nil) {
 				return
 			}
 		}
-	}, s.anchor)
-	if err != nil {
-		return false, err
 	}
-	return true, nil
 }
 
 // ExportChain writes the log as shared-package records, and returns the anchor to
