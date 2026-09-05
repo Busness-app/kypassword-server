@@ -5,7 +5,7 @@ export class HttpError extends Error {
   }
 }
 
-export async function requestJSON<T>(path: string, options: RequestInit = {}): Promise<T> {
+async function request(path: string, options: RequestInit = {}): Promise<Response> {
   const headers = new Headers(options.headers || {});
   if (!headers.has("Content-Type") && options.body && typeof options.body === "string") {
     headers.set("Content-Type", "application/json");
@@ -28,11 +28,22 @@ export async function requestJSON<T>(path: string, options: RequestInit = {}): P
     throw new HttpError(res.status, text || res.statusText);
   }
 
+  return res;
+}
+
+export async function requestJSON<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const res = await request(path, options);
+
   if (res.status === 204) {
     return {} as T;
   }
 
   return res.json() as Promise<T>;
+}
+
+export async function postBlob(path: string): Promise<Blob> {
+  const res = await request(path, { method: "POST" });
+  return res.blob();
 }
 
 export function getJSON<T>(path: string): Promise<T> {

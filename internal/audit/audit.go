@@ -117,8 +117,12 @@ func (s *Store) Snapshot() (Snapshot, error) {
 	if state.Count != s.anchor.Count || state.Hash != s.anchor.Hash {
 		return Snapshot{}, errors.New("snapshot audit state does not match the live chain anchor")
 	}
+	anchor := s.anchor
+	if anchor.Count == 0 && anchor.Hash == "" {
+		anchor.Hash = genesisHash // a chain with no entries yet is anchored at genesis
+	}
 	decoder := json.NewDecoder(bytes.NewReader(logData))
-	if err := auditchain.VerifyStream(s.key, streamRecords(decoder), s.anchor); err != nil {
+	if err := auditchain.VerifyStream(s.key, streamRecords(decoder), anchor); err != nil {
 		return Snapshot{}, fmt.Errorf("snapshot audit chain: %w", err)
 	}
 	return Snapshot{Log: logData, State: stateData, Key: bytes.Clone(s.key)}, nil

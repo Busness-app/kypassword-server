@@ -29,6 +29,9 @@ yourself adding one, the design has been misread.
   browser and is never transmitted. Changing it is a client-side re-wrap against
   `PUT /api/vault/envelopes`.
 - Paper recovery unlocks the vault, not the site.
+- Destructive backup actions require a recent KySignOn-authenticated session. Device-pairing
+  tokens carry no authentication timestamp and cannot refresh that gate. Capsule export is
+  POST-only and requires the session-bound CSRF token because it snapshots the whole service.
 - SSO settings come from `KYPASSWORD_OIDC_ISSUER`, `_CLIENT_ID`, `_CLIENT_SECRET`
   (optional `_REDIRECT_URI`, `_AUTO_PROVISION`) and take precedence over
   `config/sso.json`. `PUT /api/admin/sso` answers 409 while they are set. Without an
