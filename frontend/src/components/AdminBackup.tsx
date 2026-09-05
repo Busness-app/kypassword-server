@@ -34,6 +34,16 @@ type DrillResult = {
   checks: Array<{ name: string; passed: boolean; message: string }>;
 };
 
+type DepositReply = { result: { local_path?: string; local_error?: string; receipt?: Receipt }; warning?: string };
+
+export function BackupDepositResult({ reply }: { reply: DepositReply }) {
+  const failed = Boolean(reply.warning || reply.result.local_error);
+  const details = [reply.result.local_path ? `Local copy: ${reply.result.local_path}.` : "", reply.result.receipt ? `Deposited ${reply.result.receipt.capsule_id}.` : "", reply.result.local_error ?? "", reply.warning ?? ""].filter(Boolean).join(" ");
+  return <div role={failed ? "alert" : "status"} className="field-card" style={{ color: failed ? "var(--danger)" : "var(--success)", marginBottom: "1rem" }}>
+    {failed ? null : <CheckCircle2 size={16} />} {details}
+  </div>;
+}
+
 export function AdminBackup() {
   const [status, setStatus] = useState<BackupStatus>();
   const [url, setURL] = useState("");
@@ -44,6 +54,7 @@ export function AdminBackup() {
   const [intervalMinutes, setIntervalMinutes] = useState(1440);
   const [drill, setDrill] = useState<DrillResult>();
   const [busy, setBusy] = useState(false);
+  const [depositReply, setDepositReply] = useState<DepositReply>();
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
@@ -66,6 +77,7 @@ export function AdminBackup() {
     setBusy(true);
     setError("");
     setMessage("");
+    setDepositReply(undefined);
     try {
       await action();
       await refresh();
@@ -86,9 +98,7 @@ export function AdminBackup() {
   };
 
   const deposit = () => void act(async () => {
-    const reply = await postJSON<{ result: { local_path?: string; local_error?: string; receipt?: Receipt }; warning?: string }>("/api/backup/deposit", {});
-    const details = [reply.result.local_path ? `Local copy: ${reply.result.local_path}.` : "", reply.result.receipt ? `Deposited ${reply.result.receipt.capsule_id}.` : "", reply.result.local_error ?? "", reply.warning ?? ""].filter(Boolean);
-    setMessage(details.join(" "));
+    setDepositReply(await postJSON<DepositReply>("/api/backup/deposit", {}));
   });
 
   const runDrill = () => void act(async () => {
@@ -122,6 +132,7 @@ export function AdminBackup() {
         </button>
       </div>
 
+      {depositReply ? <BackupDepositResult reply={depositReply} /> : null}
       {message ? <div role="status" className="field-card" style={{ color: "var(--success)", marginBottom: "1rem" }}><CheckCircle2 size={16} /> {message}</div> : null}
       {error ? (
         <div role="alert" className="field-card" style={{ color: "var(--danger)", marginBottom: "1rem" }}>

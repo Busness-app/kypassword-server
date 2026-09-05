@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"github.com/Busness-app/ky-primitives/recoveryclient"
-	"net/netip"
-	"net/url"
 )
 
 type Client struct {
@@ -39,24 +37,9 @@ func (c *Client) Claim(ctx context.Context, server, code string) (PairingResult,
 }
 func AuditSafe(s string) string { return recoveryclient.AuditSafe(s) }
 
-// ValidateURL retains KyPassword's refusal of literal documentation addresses.
-// The library owns DNS resolution, address pinning, and private/loopback restrictions.
+// ValidateURL delegates address policy to recoveryclient, including DNS-time checks.
 func ValidateURL(raw string, allowPrivate bool) error {
-	if err := recoveryclient.ValidateURL(raw, allowPrivate); err != nil {
-		return err
-	}
-	u, err := url.Parse(raw)
-	if err != nil {
-		return err
-	}
-	if ip, err := netip.ParseAddr(u.Hostname()); err == nil {
-		for _, cidr := range []string{"192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24", "2001:db8::/32"} {
-			if netip.MustParsePrefix(cidr).Contains(ip.Unmap()) {
-				return fmt.Errorf("documentation address is not a recovery destination")
-			}
-		}
-	}
-	return nil
+	return recoveryclient.ValidateURL(raw, allowPrivate)
 }
 func (c *Client) Deposit(ctx context.Context, server, token string, raw []byte) (Receipt, error) {
 	if err := ValidateURL(server, c.allowPrivate); err != nil {

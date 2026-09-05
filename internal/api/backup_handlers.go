@@ -112,7 +112,9 @@ func (s *Server) handlePairRemoteRecovery(w http.ResponseWriter, r *http.Request
 	}
 	if err != nil {
 		s.record(r, "backup.pair_failed", u.ID, "", clientIP(r), backup.AuditSafe(err.Error()))
-		if errors.Is(err, fs.ErrExist) {
+		if errors.Is(err, backup.ErrDepositInProgress) {
+			s.writeBackupError(w, err)
+		} else if errors.Is(err, fs.ErrExist) {
 			http.Error(w, "already paired to a different recovery key", http.StatusConflict)
 		} else if errors.Is(err, backup.ErrInvalidURL) || strings.Contains(err.Error(), "pairing code must") {
 			http.Error(w, "invalid KyRecovery URL or pairing code", http.StatusBadRequest)
@@ -137,9 +139,9 @@ func (s *Server) handleDepositBackup(w http.ResponseWriter, r *http.Request, u u
 	result, err := s.backupService.Run(ctx)
 	action, details := backup.Outcome(result, err)
 	s.recordCtx(ctx, action, u.ID, "", clientIP(r), details)
-	if err != nil {
+	if err != nil || result.LocalError != "" {
 		if result.LocalPath != "" || result.Receipt != nil {
-			writeJSON(w, http.StatusOK, map[string]any{"result": result, "warning": "A backup destination or result recording failed; inspect the local copy and receipt before retrying."})
+			writeJSON(w, http.StatusMultiStatus, map[string]any{"result": result, "warning": "A backup destination or result recording failed; inspect the local copy and receipt before retrying."})
 			return
 		}
 		s.writeBackupError(w, err)
@@ -183,6 +185,7 @@ func (s *Server) RunScheduledDeposit(ctx context.Context) {
 		return
 	}
 	action, details := backup.Outcome(result, err)
+	log.Printf("[BACKUP] %s: %s", action, backup.AuditSafe(details))
 	s.recordCtx(ctx, action, "system", "", "", details)
 }
 

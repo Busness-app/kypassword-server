@@ -202,3 +202,6 @@ docker build -t kypassword-server:latest .   # or the container
 ```
 
 See `AGENTS.md` for the full verification suite and subsystem contracts.
+
+Local backup directories must not overlap `CONFIG_DIR` or `DATA_DIR/vaults`,
+`DATA_DIR/audit`, or `DATA_DIR/drill` (including symlink aliases). Startup rejects overlaps.

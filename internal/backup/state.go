@@ -236,7 +236,9 @@ func (a tokenSealer) Open(v string) ([]byte, error) {
 }
 
 func (s *StateStore) StorePairing(url, token string, key RecoveryKey) error {
-	s.operationMu.Lock()
+	if !s.operationMu.TryLock() {
+		return ErrDepositInProgress
+	}
 	defer s.operationMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -247,14 +249,18 @@ func (s *StateStore) StorePairing(url, token string, key RecoveryKey) error {
 	return recoveryclient.StorePairing(settings, tokenSealer{s}, url, token)
 }
 func (s *StateStore) Pin(key RecoveryKey) error {
-	s.operationMu.Lock()
+	if !s.operationMu.TryLock() {
+		return ErrDepositInProgress
+	}
 	defer s.operationMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return recoveryclient.StoreRecoveryKey(s.dir, lockedSettings{s}, key)
 }
 func (s *StateStore) Unpair() error {
-	s.operationMu.Lock()
+	if !s.operationMu.TryLock() {
+		return ErrDepositInProgress
+	}
 	defer s.operationMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
