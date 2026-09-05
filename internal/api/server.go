@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Busness-app/ky-primitives/oidcverify"
 	"github.com/Busness-app/kypassword-server/internal/audit"
 	"github.com/Busness-app/kypassword-server/internal/backup"
 	"github.com/Busness-app/kypassword-server/internal/devices"
@@ -55,8 +56,14 @@ type Server struct {
 	flushDone chan struct{}
 	closeOnce sync.Once
 
-	sessMu   sync.RWMutex
-	sessions map[string]Session // token -> Session
+	sessMu       sync.RWMutex
+	sessions     map[string]Session // token -> Session
+	oidcMu       sync.Mutex
+	oidcPending  map[string]oidcAttempt
+	oidcHTTP     *http.Client
+	oidcVerifier *oidcverify.Verifier
+	syncMu       sync.Mutex
+	syncReceipts map[string]syncReceipt
 }
 
 // Config holds initialization paths and secrets for Server.
@@ -65,6 +72,7 @@ type Config struct {
 	ConfigDir     string
 	PairingSecret string
 	RetentionDays int
+	Backup        backup.Config
 	AppVersion    string
 }
 
@@ -105,11 +113,11 @@ func NewServer(cfg Config) (*Server, error) {
 
 	ssoSt := sso.NewStore(cfg.ConfigDir)
 	backupState := backup.NewStateStore(cfg.ConfigDir)
-	recovery := backup.NewClient()
+	recovery := backup.NewClient(cfg.Backup.AllowPrivate)
 	collector := backup.Collector{
 		Vault: vStore, Audit: aStore, Users: uStore, Devices: dStore, SSO: ssoSt,
 		State: backupState, PairingSecret: cfg.PairingSecret, RetentionDays: cfg.RetentionDays,
-		AppVersion: cfg.AppVersion,
+		AppVersion: cfg.AppVersion, DataDir: cfg.DataDir,
 	}
 
 	s := &Server{
@@ -122,11 +130,12 @@ func NewServer(cfg Config) (*Server, error) {
 		recovery:      recovery,
 		pairingSecret: cfg.PairingSecret,
 		sessions:      make(map[string]Session),
-		rejects:       newAuditBudget(auditBudgetWindow, auditBudgetBurst),
-		flushStop:     make(chan struct{}),
-		flushDone:     make(chan struct{}),
+		oidcPending:   make(map[string]oidcAttempt), oidcHTTP: sso.NewHTTPClient(), syncReceipts: make(map[string]syncReceipt),
+		rejects:   newAuditBudget(auditBudgetWindow, auditBudgetBurst),
+		flushStop: make(chan struct{}),
+		flushDone: make(chan struct{}),
 	}
-	s.backupService = &backup.Service{State: backupState, Collector: collector, Client: recovery}
+	s.backupService = &backup.Service{State: backupState, Collector: collector, Client: recovery, Config: cfg.Backup}
 	go s.flushSuppressed()
 
 	return s, nil
@@ -170,7 +179,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("DELETE /api/devices/{id}", s.withAuth(s.handleDeviceRevoke))
 
 	// Directory Sync Webhook
-	mux.HandleFunc("POST /api/sync/webhook", s.handleSyncWebhook)
+	mux.Handle("POST /api/sync/webhook", s.signedSyncHandler())
 
 	// Admin Operations
 	mux.HandleFunc("GET /api/admin/users", s.withAdmin(s.handleAdminUsersList))
@@ -185,6 +194,9 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/backup/export-capsule", s.withFreshAdmin(s.handleExportCapsule))
 	mux.HandleFunc("POST /api/backup/pair-remote", s.withFreshAdmin(s.handlePairRemoteRecovery))
 	mux.HandleFunc("POST /api/backup/deposit", s.withFreshAdmin(s.handleDepositBackup))
+	mux.HandleFunc("POST /api/backup/pin-key", s.withFreshAdmin(s.handlePinRecoveryKey))
+	mux.HandleFunc("DELETE /api/backup/pairing", s.withFreshAdmin(s.handleUnpairRecovery))
+	mux.HandleFunc("PUT /api/backup/schedule", s.withFreshAdmin(s.handleBackupSchedule))
 	mux.HandleFunc("GET /api/backup/status", s.withAdmin(s.handleBackupStatus))
 
 	return s.corsMiddleware(mux)

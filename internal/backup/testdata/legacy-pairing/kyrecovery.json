@@ -1,0 +1,13 @@
+{
+  "recoveryUrl": "https://recovery.example",
+  "sealedToken": "jtY3NUdFmfLCeNediSMdlaihu5YimcWPy/29PviLg32HUyyBbzc3PP1byWCnG+SdC48",
+  "recoveryKeyId": "c9858d2de051f74c88c9cd7bc9c015725420fbde0094f5557c2c35a931feb495",
+  "threshold": 2,
+  "totalShares": 3,
+  "lastDeposit": {
+    "capsule_id": "legacy-capsule",
+    "digest": "synthetic-digest",
+    "size_bytes": 123,
+    "deposited_at": "2026-09-05T00:00:00Z"
+  }
+}

@@ -18,6 +18,9 @@ var destructiveBackupRoutes = []struct{ method, path string }{
 	{http.MethodPost, "/api/backup/deposit"},
 	{http.MethodPost, "/api/backup/export-capsule"},
 	{http.MethodPost, "/api/backup/pair-remote"},
+	{http.MethodPost, "/api/backup/pin-key"},
+	{http.MethodDelete, "/api/backup/pairing"},
+	{http.MethodPut, "/api/backup/schedule"},
 }
 
 // A stale admin can mint a 90-day device token through the ordinary pairing flow, but that

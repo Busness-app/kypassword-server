@@ -7,14 +7,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
+	"sync"
 
 	"github.com/Busness-app/ky-primitives/capsule"
-	"github.com/Busness-app/ky-primitives/recoverykey"
-	"github.com/Busness-app/ky-primitives/shamir"
+	"github.com/Busness-app/ky-primitives/recoveryclient"
+
 	"github.com/Busness-app/kypassword-server/internal/audit"
 	"github.com/Busness-app/kypassword-server/internal/vault"
 )
@@ -32,58 +33,49 @@ type DrillResult struct {
 	Error      string  `json:"error,omitempty"`
 }
 
+var drillMu sync.Mutex
+
 func RunDrill(ctx context.Context, collector Collector) (DrillResult, error) {
-	start := time.Now()
-	files, deps, recipe, err := collector.Collect()
+	drillMu.Lock()
+	defer drillMu.Unlock()
+	p, err := collector.Payload()
 	if err != nil {
 		return DrillResult{}, err
 	}
-	private, err := recoverykey.Generate()
+	if collector.DataDir == "" {
+		return DrillResult{}, recoveryclient.ErrNoScratchRoot
+	}
+	root := filepath.Join(collector.DataDir, "drill")
+	if err := os.MkdirAll(root, 0700); err != nil {
+		return DrillResult{}, err
+	}
+	r, err := recoveryclient.Drill(ctx, root, p, func(dir string, m capsule.Manifest) []recoveryclient.Check {
+		result := validateRestore(ctx, dir, m)
+		checks := make([]recoveryclient.Check, 0, len(result.Checks))
+		for _, c := range result.Checks {
+			checks = append(checks, recoveryclient.Check{Name: c.Name, Passed: c.Passed, Message: c.Message})
+		}
+		return checks
+	})
 	if err != nil {
 		return DrillResult{}, err
 	}
-	raw, _, err := capsule.Seal(ServiceName, collector.AppVersion, files, deps, recipe, 2, 3, private.Public())
-	if err != nil {
-		return DrillResult{}, err
+	result := DrillResult{Passed: r.Passed, DurationMS: r.DurationMs, Error: r.ErrorMessage}
+	for _, c := range r.Checks {
+		result.Checks = append(result.Checks, Check{Name: c.Name, Passed: c.Passed, Message: c.Message})
 	}
-	tmp, err := os.MkdirTemp("", "kypassword-drill-*")
-	if err != nil {
-		return DrillResult{}, err
-	}
-	defer os.RemoveAll(tmp)
-	manifest, _, err := capsule.Open(raw, private, tmp)
-	if err != nil {
-		return DrillResult{}, err
-	}
-	result := validateRestore(ctx, tmp, manifest)
-	result.DurationMS = time.Since(start).Milliseconds()
 	return result, nil
 }
 
-func Restore(ctx context.Context, raw []byte, shares []shamir.Share, target string) (capsule.Manifest, DrillResult, error) {
-	peek, err := capsule.ReadUnverifiedManifest(raw)
-	if err != nil {
-		return capsule.Manifest{}, DrillResult{}, err
+// ValidateRestored checks product invariants after the library authenticates/extracts a capsule.
+func ValidateRestored(root string) error {
+	r := validateRestore(context.Background(), root, capsule.Manifest{})
+	for _, c := range r.Checks {
+		if !c.Passed {
+			return fmt.Errorf("restored capsule failed validation: %s: %s", c.Name, c.Message)
+		}
 	}
-	if peek.ServiceName != ServiceName {
-		return capsule.Manifest{}, DrillResult{}, fmt.Errorf("capsule is for service %q, want %q", peek.ServiceName, ServiceName)
-	}
-	private, err := recoverykey.Combine(shares)
-	if err != nil {
-		return capsule.Manifest{}, DrillResult{}, err
-	}
-	manifest, _, err := capsule.Open(raw, private, target)
-	if err != nil {
-		return capsule.Manifest{}, DrillResult{}, err
-	}
-	if manifest.ServiceName != ServiceName {
-		return capsule.Manifest{}, DrillResult{}, fmt.Errorf("authenticated capsule is for service %q", manifest.ServiceName)
-	}
-	result := validateRestore(ctx, target, manifest)
-	if !result.Passed {
-		return manifest, result, errors.New("restored capsule failed validation")
-	}
-	return manifest, result, nil
+	return nil
 }
 
 func validateRestore(_ context.Context, root string, manifest capsule.Manifest) DrillResult {
@@ -110,14 +102,7 @@ func validateRestore(_ context.Context, root string, manifest capsule.Manifest) 
 		}
 		add(path, err)
 	}
-	auditStore, err := audit.NewStore(filepath.Join(root, "data", "audit"), filepath.Join(root, "config"))
-	if err == nil {
-		var ok bool
-		ok, err = auditStore.VerifyIntegrity()
-		if err == nil && !ok {
-			err = errors.New("audit chain invalid")
-		}
-	}
+	err := verifyRestoredAudit(root)
 	add("audit chain", err)
 
 	err = filepath.WalkDir(filepath.Join(root, "data", "vaults"), func(path string, entry os.DirEntry, walkErr error) error {
@@ -154,18 +139,68 @@ func validateRestore(_ context.Context, root string, manifest capsule.Manifest) 
 	add("encrypted vault checksums", err)
 	add("zero-knowledge boundary", nil)
 	result.Checks[len(result.Checks)-1].Message = "server holds no vault decryption key; ciphertext integrity verified"
-	_ = manifest
+	if manifest.ServiceName != "" {
+		add("verification recipe", validateRecipe(root, manifest.VerificationRecipe))
+	}
 	return result
 }
 
-func ParseShares(lines []string) ([]shamir.Share, error) {
-	shares := make([]shamir.Share, 0, len(lines))
-	for _, line := range lines {
-		share, err := shamir.ParseShare(strings.TrimSpace(line))
-		if err != nil {
-			return nil, err
-		}
-		shares = append(shares, share)
+func validateRecipe(root string, raw any) error {
+	recipe, ok := raw.(map[string]any)
+	if !ok {
+		return errors.New("invalid verification recipe")
 	}
-	return shares, nil
+	required, ok := recipe["required_files"].([]any)
+	if !ok || len(required) == 0 {
+		return errors.New("missing required_files list")
+	}
+	for _, key := range []string{"verify_audit_chain", "verify_vault_checksums"} {
+		if recipe[key] != true {
+			return fmt.Errorf("%s must be true", key)
+		}
+	}
+	seen := map[string]bool{}
+	for _, item := range required {
+		path, ok := item.(string)
+		if !ok || !fs.ValidPath(path) || filepath.IsAbs(path) || strings.Contains(path, "\\") {
+			return errors.New("invalid required file path")
+		}
+		if seen[path] {
+			return errors.New("duplicate required file")
+		}
+		seen[path] = true
+		info, err := os.Lstat(filepath.Join(root, filepath.FromSlash(path)))
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return errors.New("required file is not regular")
+		}
+	}
+	for _, path := range []string{"config/users.json", "config/devices.json", "config/sso.json", "config/restore-manifest.json", "config/pairing.secret", "config/audit.key", "config/audit.state", "data/audit/audit.jsonl"} {
+		if !seen[path] {
+			return fmt.Errorf("recipe omits %s", path)
+		}
+	}
+	return nil
+}
+
+func verifyRestoredAudit(root string) error {
+	key, err := os.ReadFile(filepath.Join(root, "config", "audit.key"))
+	if err != nil {
+		return err
+	}
+	decoded, err := hex.DecodeString(strings.TrimSpace(string(key)))
+	if err != nil {
+		return err
+	}
+	state, err := os.ReadFile(filepath.Join(root, "config", "audit.state"))
+	if err != nil {
+		return err
+	}
+	log, err := os.ReadFile(filepath.Join(root, "data", "audit", "audit.jsonl"))
+	if err != nil {
+		return err
+	}
+	return audit.VerifySnapshot(audit.Snapshot{Key: decoded, State: state, Log: log})
 }

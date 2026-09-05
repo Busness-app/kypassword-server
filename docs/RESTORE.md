@@ -26,7 +26,7 @@ vault:
 | `config/sso.json` | The KySignOn (OIDC) issuer, client ID and client secret. Environment variables override it when set |
 | `config/pairing.secret` | The bearer secret KySignOn uses to replicate accounts into this server |
 | `config/audit.key`, `config/audit.state` | The HMAC key and anchor that make the audit chain verifiable |
-| `config/recovery.pub`, `config/kyrecovery.json`, `config/recovery-token.key` | The pinned suite recovery public key, the pairing record with the KyRecovery token sealed, and the key that seals it |
+| `config/recovery.pub`, `config/kyrecovery.json`, `config/recovery-token.key` | The pinned suite public key and settings; the sealed token and its key exist only when previously paired |
 | `config/restore-manifest.json` | Service name, version and retention. It also states that the server holds no vault decryption key |
 
 The server never held a master password or a vault key, so a restored server cannot read a
@@ -73,11 +73,10 @@ docker compose run --rm --no-deps --user "$(id -u):$(id -g)" \
 The command prompts:
 
 ```
-Enter 2 custodian shares, one per line:
+Enter custodian shares, one per line; finish with EOF (Ctrl-D):
 ```
 
-Each custodian enters their share on its own line. The command stops reading after the k-th
-line. Shares are read from stdin only, never from the command line, because argv is
+Each custodian enters their share on its own line. After all k shares are entered, send EOF (Ctrl-D). Shares are read from stdin only, never from the command line, because argv is
 world-readable and lands in shell history.
 
 Only for a rehearsal with synthetic test shares, never with real cards, stdin can be a file.
@@ -87,10 +86,14 @@ Delete it afterwards; a file holding k shares is the suite key in a file.
 kypassword-server restore --capsule cap-kypassword-XXXXXXXX.kycap --to ./restored < test-shares.txt
 ```
 
-On success it prints the authenticated manifest on one line:
+After extraction and product checks pass it prints authenticated capsule details:
 
 ```
-Restored cap-kypassword-1788574282596580928 created 2026-09-05T02:11:22Z (version v1.2.0, key fe8af276..., payload e059a268...)
+Restored 12 files from capsule cap-kypassword-1788574282596580928
+  service:      kypassword (v1.2.0)
+  created:      2026-09-05T02:11:22Z
+  recovery key: fe8af276...
+  payload hash: e059a268...
 ```
 
 **Check it against KyRecovery's record.** The capsule ID and `created` must match the
@@ -102,14 +105,16 @@ Failures you may see, and what they mean:
 
 | Message | Meaning |
 |---|---|
-| `capsule manifest is not a valid kypassword recovery capsule` | The file is a capsule from another suite product. Check which service you downloaded |
+| `capsule is for service ... this instance is kypassword` | The file is a capsule from another suite product. Check which service you downloaded |
 | `not a recognised capsule container` | The file is not a `.kycap` at all: truncated download or the wrong file |
-| `received 1 shares, need 2` | Input ended before k lines were read. Check for a missed line |
+| `shamir: need at least 2 shares` | Input ended before k lines were read. Check for a missed line |
 | `shamir: share is not index-hex: checksum "6fax", expected "6fa6"` | One character on a card was mistyped. The checksum tells you which share to re-enter |
 | `capsule is sealed to a different recovery key` | Valid shares, but from a different ceremony than the one that sealed this capsule |
 | `restore target directory is not empty` | Use an empty directory. The restore never overwrites |
 
-Nothing is written on any failure. A partially extracted directory is rolled back.
+Cryptographic extraction failures roll back the partial extraction. If product validation
+fails after extraction, the target remains for diagnosis; it is not declared restored and
+must not be put into service. Use a fresh empty target for the next attempt.
 
 ## Step 2: check what came out
 

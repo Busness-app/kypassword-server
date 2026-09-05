@@ -13,7 +13,7 @@ KyPassword Server is a zero-knowledge KeePass v4 management and synchronization 
 6. **Native Device Pairing**: 90-second PIN and QR code protocol (`/api/devices/pairing/*`) for mobile apps and browser extensions.
 7. **Tamper-Evident Audit Logging**: Cryptographic hash-chained audit trail (`/api/audit/*`).
 8. **KySecurity Patina Interface**: React + TypeScript frontend using Space Grotesk, IBM Plex Mono, and Patina dark theme.
-9. **Blind KyRecovery Deposits**: `internal/backup` snapshots encrypted vault and operational state, seals `kycap/3` capsules to the pinned suite recovery public key, and deposits them without giving KyRecovery or this server the recovery private key.
+9. **Blind KyRecovery Deposits**: `internal/backup` snapshots encrypted vault and operational state, uses `ky-primitives/recoveryclient` to seal `kycap/3` capsules to the pinned suite recovery public key, and writes local copies and deposits them without giving KyRecovery or this server the recovery private key.
 
 ## Authentication
 
@@ -22,9 +22,17 @@ no password hash, no salt, no client-derived verifier, no recovery hash. A test 
 `internal/users/users_test.go` asserts those JSON keys never reappear; if you find
 yourself adding one, the design has been misread.
 
+- Pending OIDC attempts are bounded at 1024; at capacity, evict the earliest expiry
+  and admit new logins. Evicted attempts must restart. Issuer configuration is normalized
+  by removing trailing slashes before both discovery and token verification; discovered
+  and signed issuer values must still match exactly.
 - Accounts are matched on the OIDC `sub` alone, which is the KySignOn user ID
   (`kysignon-server/internal/oauth/oauth.go:310,326`). Never match on username: doing
   so hands any KySignOn identity the local account that shares its name, and its vault.
+- OIDC login attempts keep settings, PKCE verifier and nonce server-side for five minutes.
+  The cookie is an opaque single-use state. Discovery/token transport is HTTPS with no
+  redirects; `oidcverify.VerifyWithNonce` verifies issuer/client/signature/nonce before
+  claims can create/link accounts or sessions. Userinfo is not an authentication fallback.
 - The master password is not a credential. It unwraps the vault key envelope in the
   browser and is never transmitted. Changing it is a client-side re-wrap against
   `PUT /api/vault/envelopes`.
@@ -46,9 +54,12 @@ say in it. `POST /api/sync/webhook` receives:
 - a **bare SCIM 2.0 User resource** as the body — not an envelope with an `event` key
 - the event in the **`X-KySignOn-Event-Type`** header: `user.created`, `user.updated`,
   `user.deleted`
-- **`X-KySignOn-Signature`**: HMAC-SHA256 over `timestamp + "." + body`, with the
-  timestamp in `X-KySignOn-Timestamp` — not over the body alone
-- `Authorization: Bearer <secret>`, plus `X-KySignOn-Event-Id` / `Idempotency-Key`
+- **`X-KySignOn-Signature`**: `syncauth` v1 HMAC binding the RFC3339 timestamp,
+  event type, event ID and body digest. Use the shared Sign/Middleware, not a local encoder.
+- `X-KySignOn-Event-ID` is stable across retries; no bearer secret is sent or accepted.
+  A verified completed retransmission gets 200 without another mutation; failed handlers
+  may retry. ID reuse with different content/type is rejected. Completion receipts are
+  bounded and in memory for the signature window; restart durability needs persistent receipts.
 
 This was previously mismatched: KyPassword expected `{"event","user"}` and an
 `X-Sync-Signature` over the body only, so every event fell out of the switch and
@@ -62,9 +73,10 @@ it treats 2xx as success, plus 404 on `user.deleted` and 409 on `user.created`. 
 `user.updated` is a delivery *failure* it will retry, so an update naming an unknown
 subject provisions the account when auto-provisioning is on and otherwise returns 200.
 
-Keep the configured callback URL free of `/scim`, and do not let it end in `/Users` or
-`/v2`: `resolveSCIMURL()` switches to RESTful SCIM on those, sending PUT and DELETE to
-paths KyPassword does not serve.
+Configure the sender as suite type `kypassword` with callback `/api/sync/webhook`.
+Generic `scim` and path-detected `custom` senders can use RESTful PUT/DELETE paths that
+KyPassword does not serve. Deploy the signed KySignOn sender with this receiver;
+legacy unsigned or timestamp-dot-body requests are rejected.
 
 A `user.deleted` deactivates the account and **never** deletes the vault. The vault is
 the user's, not the directory's.
@@ -119,8 +131,8 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
 
 ## Child DOX Index
 
-- `internal/backup/AGENTS.md`: owns KyRecovery pairing state, SSRF-safe transport, capsule
-  collection/deposit, and restore validation. Vault validation is ciphertext/checksum-only;
+- `internal/backup/AGENTS.md`: owns the recoveryclient settings/sealer adapter, file-store
+  collection, product restore validation, and backup integration. Vault validation is ciphertext/checksum-only;
   only drills and restores may hold private recovery material.
 
 - `frontend/src/lib/storage.ts`: manages the persistent IndexedDB `keys` vault on trusted devices

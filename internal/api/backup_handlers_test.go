@@ -3,10 +3,13 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Busness-app/ky-primitives/recoverykey"
 	"github.com/Busness-app/kypassword-server/internal/backup"
@@ -102,5 +105,127 @@ func TestExportCapsuleRequiresCSRF(t *testing.T) {
 	srv.Routes().ServeHTTP(rec, request)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("export without CSRF = %d, want 403", rec.Code)
+	}
+}
+
+func TestEveryBackupMutationRequiresCSRFAndAdmin(t *testing.T) {
+	srv := newTestServer(t)
+	_, admin := signedInUser(t, srv, "admin", users.RoleAdmin)
+	_, user := signedInUser(t, srv, "user", users.RoleUser)
+	routes := append(append([]struct{ method, path string }{}, destructiveBackupRoutes...), struct{ method, path string }{http.MethodPost, "/api/backup/drill"})
+	for _, route := range routes {
+		r := httptest.NewRequest(route.method, route.path, strings.NewReader(`{}`))
+		r.AddCookie(admin)
+		w := httptest.NewRecorder()
+		srv.Routes().ServeHTTP(w, r)
+		if w.Code != 403 {
+			t.Errorf("%s without CSRF: %d", route.path, w.Code)
+		}
+		w = httptest.NewRecorder()
+		srv.Routes().ServeHTTP(w, csrfRequest(t, srv, user, route.method, route.path, `{}`))
+		if w.Code != 403 {
+			t.Errorf("%s nonadmin: %d", route.path, w.Code)
+		}
+	}
+}
+func TestPinScheduleAndLocalBackupRoutes(t *testing.T) {
+	srv := newTestServer(t)
+	_, admin := signedInUser(t, srv, "admin", users.RoleAdmin)
+	srv.backupService.Config.Directory = t.TempDir()
+	srv.backupService.Config.Keep = 2
+	key, e := recoverykey.Generate()
+	if e != nil {
+		t.Fatal(e)
+	}
+	body, _ := json.Marshal(map[string]any{"publicKey": base64.StdEncoding.EncodeToString(key.Public().Bytes()), "threshold": 2, "totalShares": 3})
+	call := func(method, path, body string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		srv.Routes().ServeHTTP(w, csrfRequest(t, srv, admin, method, path, body))
+		return w
+	}
+	if w := call("POST", "/api/backup/pin-key", string(body)); w.Code != 200 {
+		t.Fatalf("pin: %d %s", w.Code, w.Body.String())
+	}
+	if w := call("PUT", "/api/backup/schedule", `{"intervalSec":900}`); w.Code != 200 {
+		t.Fatalf("schedule: %d %s", w.Code, w.Body.String())
+	}
+	if w := call("PUT", "/api/backup/schedule", `{"intervalSec":899}`); w.Code != 400 {
+		t.Fatalf("bad interval: %d", w.Code)
+	}
+	if w := call("POST", "/api/backup/deposit", `{}`); w.Code != 200 || !bytes.Contains(w.Body.Bytes(), []byte("local_path")) {
+		t.Fatalf("local backup: %d %s", w.Code, w.Body.String())
+	}
+}
+
+type blockedRecovery struct{ started, release chan struct{} }
+
+func (f *blockedRecovery) Deposit(ctx context.Context, _, _ string, _ []byte) (backup.Receipt, error) {
+	close(f.started)
+	select {
+	case <-f.release:
+	case <-ctx.Done():
+	}
+	return backup.Receipt{}, backup.ErrRemote
+}
+func TestPartialBackupAndBusyUnpair(t *testing.T) {
+	srv := newTestServer(t)
+	_, admin := signedInUser(t, srv, "admin", users.RoleAdmin)
+	key, err := recoverykey.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.backupState.StorePairing("https://recovery.example", "synthetic", backup.RecoveryKey{Public: key.Public(), Threshold: 2, TotalShares: 3}); err != nil {
+		t.Fatal(err)
+	}
+	srv.backupService.Config.Directory = t.TempDir()
+	srv.backupService.Config.Keep = 2
+	fake := &blockedRecovery{make(chan struct{}), make(chan struct{})}
+	srv.backupService.Client = fake
+	deposit := httptest.NewRecorder()
+	req := csrfRequest(t, srv, admin, "POST", "/api/backup/deposit", `{}`)
+	done := make(chan struct{})
+	go func() { defer close(done); srv.Routes().ServeHTTP(deposit, req) }()
+	var unpaired chan struct{}
+	defer func() {
+		close(fake.release)
+		<-done
+		if unpaired != nil {
+			<-unpaired
+		}
+	}()
+	select {
+	case <-fake.started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("deposit did not start")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	unpair := httptest.NewRecorder()
+	unpaired = make(chan struct{})
+	go func() {
+		defer close(unpaired)
+		srv.Routes().ServeHTTP(unpair, csrfRequest(t, srv, admin, "DELETE", "/api/backup/pairing", `{}`).WithContext(ctx))
+	}()
+	select {
+	case <-unpaired:
+	case <-ctx.Done():
+		t.Fatal("unpair blocked behind deposit")
+	}
+	if unpair.Code != http.StatusConflict {
+		t.Fatalf("unpair: %d %s", unpair.Code, unpair.Body.String())
+	}
+	claimant := &fakeRecovery{}
+	srv.recovery = claimant
+	pair := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(pair, csrfRequest(t, srv, admin, "POST", "/api/backup/pair-remote", `{"recoveryUrl":"https://recovery.example","pairingCode":"123456"}`))
+	if pair.Code != http.StatusConflict || claimant.claims != 0 {
+		t.Fatalf("busy pairing consumed code: status=%d claims=%d", pair.Code, claimant.claims)
+	}
+
+	// Release without closing so the deferred cleanup can close it once.
+	fake.release <- struct{}{}
+	<-done
+	if deposit.Code != http.StatusMultiStatus || !bytes.Contains(deposit.Body.Bytes(), []byte("local_path")) || !bytes.Contains(deposit.Body.Bytes(), []byte("warning")) {
+		t.Fatalf("partial: %d %s", deposit.Code, deposit.Body.String())
 	}
 }

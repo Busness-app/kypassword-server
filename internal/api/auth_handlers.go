@@ -2,19 +2,28 @@ package api
 
 import (
 	"crypto/rand"
-	"encoding/hex"
+
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
-	"strings"
+
 	"time"
 
+	"github.com/Busness-app/ky-primitives/oidcverify"
 	"github.com/Busness-app/kypassword-server/internal/sso"
 	"github.com/Busness-app/kypassword-server/internal/users"
 )
 
 const ssoCookieName = "kypass_sso_state"
+
+type oidcAttempt struct {
+	Settings                     sso.SSOSettings
+	Discovery                    sso.OIDCDiscovery
+	Verifier, Nonce, RedirectURI string
+	LinkUserID                   string
+	Expires                      time.Time
+}
 
 // There is no local authentication here, by design. KySignOn is the only authenticator:
 // no login endpoint, no login parameters, no recovery-as-site-access, no first-run setup.
@@ -40,6 +49,9 @@ func (s *Server) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("link") == "true" {
 		if auth, ok := s.currentUser(r); ok {
 			linkUserID = auth.ID
+		} else {
+			http.Error(w, "sign in before linking", http.StatusUnauthorized)
+			return
 		}
 	}
 
@@ -49,23 +61,10 @@ func (s *Server) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	stateBytes := make([]byte, 16)
-	_, _ = rand.Read(stateBytes)
-	state := hex.EncodeToString(stateBytes)
-
-	cookieVal := fmt.Sprintf("%s|%s|%s", state, verifier, linkUserID)
+	state := rand.Text()
+	nonce := rand.Text()
 	secure := isRequestSecure(r)
-	http.SetCookie(w, &http.Cookie{
-		Name:     ssoCookieName,
-		Value:    cookieVal,
-		Path:     "/",
-		HttpOnly: true,
-		Secure:   secure,
-		SameSite: http.SameSiteLaxMode,
-		MaxAge:   300,
-	})
-
-	disc, err := sso.DiscoverEndpoints(r.Context(), settings.IssuerURL)
+	disc, err := sso.DiscoverEndpoints(r.Context(), settings.IssuerURL, s.oidcHTTP)
 	if err != nil {
 		http.Error(w, "failed to discover OIDC endpoints: "+err.Error(), http.StatusBadGateway)
 		return
@@ -91,10 +90,31 @@ func (s *Server) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
 	q.Set("redirect_uri", redirectURI)
 	q.Set("scope", "openid profile email")
 	q.Set("state", state)
+	q.Set("nonce", nonce)
 	q.Set("code_challenge", challenge)
 	q.Set("code_challenge_method", "S256")
 	authURL.RawQuery = q.Encode()
 
+	s.oidcMu.Lock()
+	for id, attempt := range s.oidcPending {
+		if time.Now().After(attempt.Expires) {
+			delete(s.oidcPending, id)
+		}
+	}
+	if len(s.oidcPending) >= 1024 {
+		// ponytail: scan at most 1024 entries; use an ordered cache if the cap grows.
+		oldest := ""
+		var expires time.Time
+		for id, attempt := range s.oidcPending {
+			if oldest == "" || attempt.Expires.Before(expires) {
+				oldest, expires = id, attempt.Expires
+			}
+		}
+		delete(s.oidcPending, oldest)
+	}
+	s.oidcPending[state] = oidcAttempt{Settings: settings, Discovery: *disc, Verifier: verifier, Nonce: nonce, RedirectURI: redirectURI, LinkUserID: linkUserID, Expires: time.Now().Add(5 * time.Minute)}
+	s.oidcMu.Unlock()
+	http.SetCookie(w, &http.Cookie{Name: ssoCookieName, Value: state, Path: "/", HttpOnly: true, Secure: secure, SameSite: http.SameSiteLaxMode, MaxAge: 300})
 	http.Redirect(w, r, authURL.String(), http.StatusFound)
 }
 
@@ -122,59 +142,55 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 		MaxAge:   -1,
 	})
 
-	parts := strings.Split(cookie.Value, "|")
-	if len(parts) < 2 {
-		http.Error(w, "corrupted SSO state cookie", http.StatusBadRequest)
-		return
-	}
-	expectedState := parts[0]
-	codeVerifier := parts[1]
-	linkUserID := ""
-	if len(parts) >= 3 {
-		linkUserID = parts[2]
-	}
-
 	state := r.URL.Query().Get("state")
 	code := r.URL.Query().Get("code")
-	if state == "" || code == "" {
-		http.Error(w, "missing state or authorization code", http.StatusBadRequest)
+	if state == "" || code == "" || state != cookie.Value {
+		http.Error(w, "invalid SSO state", http.StatusBadRequest)
 		return
 	}
-
-	if state != expectedState {
-		http.Error(w, "invalid or mismatched SSO state parameter", http.StatusBadRequest)
+	s.oidcMu.Lock()
+	attempt, ok := s.oidcPending[state]
+	delete(s.oidcPending, state)
+	s.oidcMu.Unlock()
+	if !ok || time.Now().After(attempt.Expires) || settings != attempt.Settings {
+		http.Error(w, "expired or changed SSO login", http.StatusBadRequest)
 		return
 	}
-
-	disc, err := sso.DiscoverEndpoints(r.Context(), settings.IssuerURL)
+	tok, err := sso.ExchangeCode(r.Context(), attempt.Discovery.TokenEndpoint, settings.ClientID, settings.ClientSecret, code, attempt.RedirectURI, attempt.Verifier, s.oidcHTTP)
 	if err != nil {
-		http.Error(w, "failed to discover OIDC endpoints: "+err.Error(), http.StatusBadGateway)
+		http.Error(w, "identity token exchange failed", http.StatusBadGateway)
 		return
 	}
-
-	scheme := "http"
-	if secure {
-		scheme = "https"
+	s.oidcMu.Lock()
+	v := s.oidcVerifier
+	if v == nil || v.Issuer != settings.IssuerURL || v.Audience != settings.ClientID || v.JWKSURL != attempt.Discovery.JWKSURI {
+		v = &oidcverify.Verifier{Issuer: settings.IssuerURL, Audience: settings.ClientID, JWKSURL: attempt.Discovery.JWKSURI, HTTPClient: s.oidcHTTP}
+		s.oidcVerifier = v
 	}
-	redirectURI := settings.RedirectURI
-	if redirectURI == "" {
-		redirectURI = fmt.Sprintf("%s://%s/api/auth/oidc/callback", scheme, requestHost(r))
-	}
-
-	tok, err := sso.ExchangeCode(r.Context(), disc.TokenEndpoint, settings.ClientID, settings.ClientSecret, code, redirectURI, codeVerifier)
+	s.oidcMu.Unlock()
+	verified, err := v.VerifyWithNonce(r.Context(), tok.IDToken, attempt.Nonce)
 	if err != nil {
-		http.Error(w, "failed to exchange token: "+err.Error(), http.StatusBadGateway)
+		s.recordAnonymousRejection(r, "auth.oidc_rejected", clientIP(r), "identity token verification failed")
+		http.Error(w, "identity token verification failed", http.StatusUnauthorized)
 		return
 	}
-
-	claims, err := sso.ParseClaims(r.Context(), tok.IDToken, tok.AccessToken, disc.UserinfoEndpoint)
+	claims, err := sso.VerifiedClaims(verified)
 	if err != nil {
-		http.Error(w, "failed to parse claims: "+err.Error(), http.StatusBadGateway)
+		http.Error(w, "invalid identity claims", http.StatusUnauthorized)
 		return
 	}
-
+	if s.ssoStore.Load() != attempt.Settings {
+		http.Error(w, "SSO configuration changed; sign in again", http.StatusBadRequest)
+		return
+	}
+	linkUserID := attempt.LinkUserID
 	// 1. Account linking mode
 	if linkUserID != "" {
+		current, ok := s.currentUser(r)
+		if !ok || current.ID != linkUserID || (current.SSOSub != "" && current.SSOSub != claims.Sub) {
+			http.Error(w, "linking identity does not match the initiating account", http.StatusForbidden)
+			return
+		}
 		if err := s.users.LinkSSO(linkUserID, claims.Sub, claims.PreferredUsername, claims.Email); err != nil {
 			http.Error(w, "failed to link account: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -205,13 +221,13 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 
 		username := claims.PreferredUsername
 		if username == "" {
-			username = "user_" + claims.Sub[:8]
+			username = "user_" + truncate(claims.Sub, 8)
 		}
 
 		createdUser, errCreate := s.users.CreateSSOUser(username, role, claims.Sub, claims.PreferredUsername, claims.Email)
 		if errCreate != nil {
 			if errors.Is(errCreate, users.ErrUsernameTaken) {
-				username = fmt.Sprintf("%s_%s", username, claims.Sub[:6])
+				username = fmt.Sprintf("%s_%s", username, truncate(claims.Sub, 6))
 				createdUser, errCreate = s.users.CreateSSOUser(username, role, claims.Sub, claims.PreferredUsername, claims.Email)
 			}
 			if errCreate != nil {

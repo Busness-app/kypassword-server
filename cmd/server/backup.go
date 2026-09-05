@@ -1,8 +1,9 @@
 package main
 
 import (
-	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -10,9 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 
-	"github.com/Busness-app/ky-primitives/capsule"
+	"github.com/Busness-app/ky-primitives/recoveryclient"
 	"github.com/Busness-app/kypassword-server/internal/audit"
 	"github.com/Busness-app/kypassword-server/internal/backup"
 	"github.com/Busness-app/kypassword-server/internal/devices"
@@ -70,9 +70,13 @@ func openOfflineBackup() (*offlineBackup, error) {
 	}
 	state := backup.NewStateStore(configDir)
 	collector := backup.Collector{Vault: v, Audit: a, Users: u, Devices: d, SSO: sso.NewStore(configDir), State: state,
-		PairingSecret: secret, RetentionDays: retention, AppVersion: buildVersion()}
-	client := backup.NewClient()
-	return &offlineBackup{service: &backup.Service{State: state, Collector: collector, Client: client}, audit: a, lock: lock}, nil
+		PairingSecret: secret, RetentionDays: retention, AppVersion: buildVersion(), DataDir: dataDir}
+	cfg, err := backup.ConfigFromEnv()
+	if err != nil {
+		return fail(err)
+	}
+	client := backup.NewClient(cfg.AllowPrivate)
+	return &offlineBackup{service: &backup.Service{State: state, Collector: collector, Client: client, Config: cfg}, audit: a, lock: lock}, nil
 }
 
 func (o *offlineBackup) Close() { _ = o.lock.Close() }
@@ -100,8 +104,8 @@ func runBackupCommand(command string, args []string, out io.Writer) error {
 	case "export-capsule":
 		return runExport(offline, args, out)
 	case "deposit":
-		receipt, manifest, err := offline.service.Deposit(context.Background())
-		action, _, details := backup.Outcome(receipt, manifest, err)
+		result, err := offline.service.Run(context.Background())
+		action, details := backup.Outcome(result, err)
 		_, auditErr := offline.audit.Log(context.Background(), action, "cli", "", "", details)
 		if err != nil {
 			return err
@@ -109,7 +113,7 @@ func runBackupCommand(command string, args []string, out io.Writer) error {
 		if auditErr != nil {
 			return fmt.Errorf("deposit succeeded but audit failed: %w", auditErr)
 		}
-		fmt.Fprintf(out, "Deposited %s (%d bytes), digest %s\n", receipt.CapsuleID, receipt.SizeBytes, receipt.Digest)
+		json.NewEncoder(out).Encode(result)
 		return nil
 	}
 	return errors.New("unknown backup command")
@@ -169,40 +173,18 @@ func runRestore(args []string, in io.Reader, out io.Writer) error {
 	if *capsulePath == "" || *target == "" {
 		return errors.New("restore requires --capsule and --to")
 	}
-	raw, err := os.ReadFile(*capsulePath)
+	fmt.Fprintln(out, "Enter custodian shares, one per line; finish with EOF (Ctrl-D):")
+	shares, err := recoveryclient.ReadShares(in)
 	if err != nil {
 		return err
 	}
-	peek, err := capsule.ReadUnverifiedManifest(raw)
-	if err != nil {
+	var message bytes.Buffer
+	if err := recoveryclient.Restore(*capsulePath, *target, backup.ServiceName, shares, &message); err != nil {
 		return err
 	}
-	if peek.ServiceName != backup.ServiceName || peek.Threshold < 2 || peek.Threshold > 255 {
-		return fmt.Errorf("capsule manifest is not a valid %s recovery capsule", backup.ServiceName)
-	}
-	fmt.Fprintf(out, "Enter %d custodian shares, one per line:\n", peek.Threshold)
-	scanner := bufio.NewScanner(in)
-	lines := make([]string, 0, peek.Threshold)
-	for len(lines) < peek.Threshold && scanner.Scan() {
-		if line := strings.TrimSpace(scanner.Text()); line != "" {
-			lines = append(lines, line)
-		}
-	}
-	if err := scanner.Err(); err != nil {
+	if err := backup.ValidateRestored(*target); err != nil {
 		return err
 	}
-	if len(lines) != peek.Threshold {
-		return fmt.Errorf("received %d shares, need %d", len(lines), peek.Threshold)
-	}
-	shares, err := backup.ParseShares(lines)
-	if err != nil {
-		return err
-	}
-	manifest, _, err := backup.Restore(context.Background(), raw, shares, *target)
-	if err != nil {
-		return err
-	}
-	fmt.Fprintf(out, "Restored %s created %s (version %s, key %s, payload %s)\n",
-		manifest.CapsuleID, manifest.CreatedAt.Format("2006-01-02T15:04:05Z07:00"), manifest.AppVersion, manifest.RecoveryKeyID, manifest.PayloadHash)
-	return nil
+	_, err = io.Copy(out, &message)
+	return err
 }

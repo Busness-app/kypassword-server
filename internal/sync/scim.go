@@ -6,20 +6,10 @@
 package sync
 
 import (
-	"crypto/hmac"
-	"crypto/sha256"
-	"crypto/subtle"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
-	"time"
 )
-
-// clockSkew bounds how far a signed timestamp may be from now. It exists so a captured
-// request cannot be replayed indefinitely; the sender re-signs on every retry.
-const clockSkew = 5 * time.Minute
 
 // SCIMUser is the subset of a SCIM User resource KyPassword acts on.
 type SCIMUser struct {
@@ -69,44 +59,3 @@ func ParseSCIMUser(body []byte) (SCIMUser, error) {
 	}
 	return u, nil
 }
-
-// VerifySignature checks the HMAC KySignOn computes over `timestamp + "." + body`, and
-// that the timestamp is recent. Both halves matter: without the freshness bound a captured
-// request stays replayable for as long as the secret lives.
-func VerifySignature(secret, timestamp string, body []byte, signature string) error {
-	if secret == "" {
-		return errors.New("no sync secret is configured")
-	}
-	if signature == "" {
-		return errors.New("request carries no signature")
-	}
-
-	sent, err := time.Parse(time.RFC3339, timestamp)
-	if err != nil {
-		return fmt.Errorf("signature timestamp is not RFC3339: %w", err)
-	}
-	if delta := time.Since(sent); delta > clockSkew || delta < -clockSkew {
-		return fmt.Errorf("signature timestamp is %s away from now", delta.Round(time.Second))
-	}
-
-	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write([]byte(timestamp))
-	mac.Write([]byte("."))
-	mac.Write(body)
-	expected := hex.EncodeToString(mac.Sum(nil))
-
-	if subtle.ConstantTimeCompare([]byte(expected), []byte(signature)) != 1 {
-		return errors.New("signature does not match")
-	}
-	return nil
-}
-
-// EventType reads the replication event from the header KySignOn sets.
-func EventType(r *http.Request) string {
-	return r.Header.Get("X-KySignOn-Event-Type")
-}
-
-// Signature and Timestamp read the headers KySignOn signs a request with. Callers use
-// their presence to tell a signed request from an unsigned legacy one.
-func Signature(r *http.Request) string { return r.Header.Get("X-KySignOn-Signature") }
-func Timestamp(r *http.Request) string { return r.Header.Get("X-KySignOn-Timestamp") }
