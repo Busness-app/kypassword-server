@@ -131,6 +131,15 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
 
 ## Child DOX Index
 
+- `frontend/src/lib/vaultSave.ts`: owns one automatic save queue per unlocked vault.
+  Applied edits, entry/folder creation, deletion, and CSV import enqueue saves. Serialize
+  KDBX exports and uploads; each success acknowledges only its starting edit revision and
+  advances the version for the next upload. Failures (including 409) remain unsaved and
+  require explicit retry. Uploads use the shared CSRF request helper. `App.tsx` retains
+  the queue and mounted editor across tabs, warns before unloading unsaved work, and guards
+  lock/logout and rollback. Draft fields require Apply Edits; they stay in memory only.
+  `vaultSave.test.ts` checks encrypted round trips, in-flight edits, failures, and retry.
+
 - `frontend/src/styles/styles.css`: `.settings-page` provides the bounded scroll area for
   Admin and Security within the fixed-height app shell; keep long backup forms reachable.
 
