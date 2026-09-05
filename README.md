@@ -54,6 +54,7 @@ over anything saved in `config/sso.json`. The admin UI will refuse to overwrite 
 | `DATA_DIR` | no | defaults to `./data` — vaults, history, audit log |
 | `CONFIG_DIR` | no | defaults to `./config` — `users.json`, `sso.json`, pairing secret, audit key and chain state |
 | `RETENTION_DAYS` | no | defaults to `90` |
+| `KYPASSWORD_SCIM_TOKEN` | no | Dedicated random provisioning token, 32–512 characters; unset disables SCIM unless a restored `CONFIG_DIR/scim.token` exists |
 | `PAIRING_SECRET` | no | generated into `CONFIG_DIR/pairing.secret` if unset |
 | `AUDIT_KEY` | no | exactly 32 bytes, as 64 hex characters or standard base64; generated into `CONFIG_DIR/audit.key` if unset |
 | `KYPASSWORD_BACKUP_DEPOSIT_INTERVAL` | no | Backup interval default; `24h`, `0` disables, otherwise whole seconds from `15m` to `8784h`; admin setting overrides it |
@@ -129,12 +130,55 @@ Pair KyPassword as a system in KySignOn with the callback URL:
 https://<your-kypassword-host>/api/sync/webhook
 ```
 
-Keep `/scim` out of that URL and do not let it end in `/Users` or `/v2` — KySignOn routes
-RESTfully on those, to paths this server does not serve.
+Keep this signed webhook URL unchanged. Standard SCIM uses a separate endpoint and
+authentication protocol, described below; changing only the callback URL will not migrate
+an existing signed KySignOn connection.
 
 Replication is keyed on the KySignOn user ID, which is the OIDC `sub`, so an account
 created by replication and one created at first sign-in converge on the same record. A
 deletion in KySignOn deactivates the KyPassword account and **keeps the vault**.
+
+## Standard SCIM provisioning
+
+**Admin → User Directory → SCIM Provisioning** shows the base URL and whether the
+provisioning token is configured. Set `KYPASSWORD_SCIM_TOKEN` to a random dedicated token
+of at least 32 characters (for example, generate one with `openssl rand -hex 32`) and
+restart the server. Docker Compose reads it from your deployment environment or `.env`.
+The effective token is included inside sealed recovery capsules as `config/scim.token`.
+After restore, startup reads that file unless an environment token overrides it. To disable
+SCIM, unset the environment token and remove any restored `CONFIG_DIR/scim.token`.
+
+Configure the provisioning client with:
+
+- Base URL: `https://<your-kypassword-host>/scim/v2`
+- Authentication: the dedicated token as `Authorization: Bearer <token>`
+- Identity mapping: `externalId` must equal the user's **KySignOn OIDC subject**.
+  Username and email never link an account to a vault.
+
+The API supports user creation, GET, equality lookup by `externalId`/`userName`, paginated
+listing (up to 100 per page), PUT, PATCH, and DELETE. PATCH accepts add/replace for
+`userName`, `active`, `emails`, and `roles`, and remove for `emails`/`roles`, including
+pathless add/replace attribute objects. Invalid operations reject the entire patch.
+The local directory stores one email and one role per user; additional values are rejected.
+Groups, bulk, arbitrary filters, and complex attribute paths are not supported.
+
+A create returns the server's local `id`; use that ID for subsequent requests. A duplicate
+subject or username returns 409 and must be reconciled by the client. Deactivation revokes
+sessions and outstanding pairing codes. DELETE hides the directory resource and deactivates
+the retained account; it never deletes the encrypted vault. Recreating the same externalId
+restores the retained account. A signed `user.updated` event cannot undo deletion, even
+when it carries `active: true`: it is acknowledged and audited as `sync.update_ignored_deleted`.
+An explicit signed `user.created` can restore the account and records `sync.user_restored`.
+Local administrator reactivation remains an override; active accounts always appear in SCIM
+GET/list so reconciliation can see that access. Failed SCIM authentication is recorded through
+the existing bounded anonymous-rejection audit path, without credential values.
+Sign-in continues through KySignOn only.
+
+The shared `github.com/Busness-app/ky-primitives/scim` v0.6.0 client is verified against this
+receiver over TLS. The existing **signed webhook** is a separate supported interface:
+keep existing KySignOn `kypassword` connections on `/api/sync/webhook`. Moving one to
+standard SCIM requires a sender using bearer authentication and server-returned IDs;
+changing only its callback URL is insufficient.
 
 ## KyRecovery backups
 

@@ -17,6 +17,7 @@ import (
 	"github.com/Busness-app/kypassword-server/internal/backup"
 	"github.com/Busness-app/kypassword-server/internal/devices"
 	"github.com/Busness-app/kypassword-server/internal/sso"
+	kysync "github.com/Busness-app/kypassword-server/internal/sync"
 	"github.com/Busness-app/kypassword-server/internal/users"
 	"github.com/Busness-app/kypassword-server/internal/vault"
 )
@@ -69,8 +70,12 @@ func openOfflineBackup() (*offlineBackup, error) {
 		return fail(err)
 	}
 	state := backup.NewStateStore(configDir)
+	scimToken, err := kysync.LoadSCIMToken(configDir, os.Getenv("KYPASSWORD_SCIM_TOKEN"))
+	if err != nil {
+		return fail(err)
+	}
 	collector := backup.Collector{Vault: v, Audit: a, Users: u, Devices: d, SSO: sso.NewStore(configDir), State: state,
-		PairingSecret: secret, RetentionDays: retention, AppVersion: buildVersion(), DataDir: dataDir}
+		PairingSecret: secret, SCIMToken: scimToken, RetentionDays: retention, AppVersion: buildVersion(), DataDir: dataDir}
 	cfg, err := backup.ConfigFromEnv()
 	if err != nil {
 		return fail(err)

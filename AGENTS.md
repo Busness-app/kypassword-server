@@ -9,7 +9,7 @@ KyPassword Server is a zero-knowledge KeePass v4 management and synchronization 
    KyAuth may upload its local KDBX and password envelope when the server vault is empty; the web client opens both raw-key and KyAuth hex-key KDBX credentials.
 3. **Atomic Sync & Conflict Preservation**: Optimistic concurrency via ETag / version check (`If-Match: "{version}"`). Conflicting uploads are rejected and preserved in `conflicts/` for client deconfliction.
 4. **Bounded Version History & Rollback**: Keep up to 100 snapshots per user spread across a default 90-day age window, with one-click rollback. Saves and rollbacks prune synchronously under the store lock. After age expiry, preserve the oldest/newest snapshots and thin the closest-spaced interior snapshots so a burst of writes cannot erase the pre-session recovery window.
-5. **KySignOn SSO & Directory Replication**: KySignOn is the sole authenticator and sole directory (`/api/auth/oidc/login`, `/api/sync/webhook`). There is no local login, no local account creation and no server-side credential of any kind. See "Replication" and "Authentication" below.
+5. **KySignOn SSO & Directory Replication**: KySignOn is the sole authenticator and sole directory (`/api/auth/oidc/login`, `/api/sync/webhook`). There is no local login, no local account creation and no server-side user credential. See "Replication" and "Authentication" below.
 6. **Native Device Pairing**: 90-second PIN and QR code protocol (`/api/devices/pairing/*`) for mobile apps and browser extensions.
 7. **Tamper-Evident Audit Logging**: Cryptographic hash-chained audit trail (`/api/audit/*`).
 8. **KySecurity Patina Interface**: React + TypeScript frontend using Space Grotesk, IBM Plex Mono, and Patina dark theme.
@@ -73,10 +73,39 @@ it treats 2xx as success, plus 404 on `user.deleted` and 409 on `user.created`. 
 `user.updated` is a delivery *failure* it will retry, so an update naming an unknown
 subject provisions the account when auto-provisioning is on and otherwise returns 200.
 
-Configure the sender as suite type `kypassword` with callback `/api/sync/webhook`.
-Generic `scim` and path-detected `custom` senders can use RESTful PUT/DELETE paths that
-KyPassword does not serve. Deploy the signed KySignOn sender with this receiver;
-legacy unsigned or timestamp-dot-body requests are rejected.
+For signed replication, configure suite type `kypassword` with callback
+`/api/sync/webhook`. Deploy the signed KySignOn sender with this receiver;
+legacy unsigned or timestamp-dot-body webhook requests are rejected.
+
+Standard Users-only SCIM uses `/scim/v2` and the shared `ky-primitives/scim` v0.6.0
+wire types. It is disabled unless `KYPASSWORD_SCIM_TOKEN` is set (32–512 characters).
+That dedicated bearer token grants directory access only; session, pairing and OIDC
+secrets are not SCIM credentials. The deployment token overrides a restored `CONFIG_DIR/scim.token`. Collect the effective
+token inside sealed capsules; it grants directory access but never user sessions. To disable
+SCIM after restore, remove that file and unset the environment token.
+
+`POST /Users` requires `externalId` equal to the KySignOn OIDC subject and returns the
+server-owned local `id`. Lookup supports equality on `externalId` or `userName`, with
+bounded pagination. PUT preserves the subject; PATCH supports add/replace of userName,
+active, emails and roles, plus removal of emails/roles. Store one email and role per user;
+reject additional values rather than discard them. Validate every operation before
+one atomic directory update. Groups, bulk and arbitrary filters/attribute paths are outside
+this interface. `/ServiceProviderConfig` advertises supported operations.
+
+DELETE marks the account `scimDeleted` and inactive while retaining its vault. Only inactive
+tombstones are hidden from SCIM GET/list; a local admin's reactivation must remain visible.
+Creating the same externalId or an explicit signed `user.created` recovers the retained account.
+Signed `user.updated` acknowledges but never restores inactive tombstones, recording
+`sync.update_ignored_deleted`; explicit signed recreation records `sync.user_restored`.
+SCIM authentication/disabled-route failures use `recordAnonymousRejection` with action
+`scim.rejected`, a fixed non-secret detail and the existing source audit budget.
+Successful SCIM writes distinguish `scim.user_created`, `scim.user_restored` and
+`scim.user_updated`; details record role/active state or transitions, never credentials.
+Deactivation invalidates existing sessions and outstanding pairing codes. The standard
+client must use its bearer token and returned server IDs; the old signed generic sender's
+empty DELETE payload is not accepted by this interface. `Admin → User Directory` shows
+configuration and the base URL, never the token. `internal/api/scim_handlers_test.go` drives
+the real shared client over TLS and checks convergence with the captured KySignOn payload.
 
 A `user.deleted` deactivates the account and **never** deletes the vault. The vault is
 the user's, not the directory's.

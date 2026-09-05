@@ -81,6 +81,7 @@ func main() {
 		DataDir:       dataDir,
 		ConfigDir:     configDir,
 		PairingSecret: pairingSecret,
+		SCIMToken:     os.Getenv("KYPASSWORD_SCIM_TOKEN"),
 		RetentionDays: retentionDays,
 		AppVersion:    buildVersion(),
 		Backup:        backupConfig,
@@ -92,6 +93,7 @@ func main() {
 	rootMux := http.NewServeMux()
 	rootMux.Handle("/api/", srv.Routes())
 	rootMux.Handle("/auth/", srv.Routes())
+	rootMux.Handle("/scim/", srv.Routes())
 
 	// Static SPA file serving
 	webDir := os.Getenv("WEB_DIR")

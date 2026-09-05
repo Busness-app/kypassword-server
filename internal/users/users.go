@@ -32,12 +32,13 @@ const (
 // reaches it, not even as a derived verifier — it is the client-side secret that unwraps
 // the vault key envelope, and nothing else.
 type User struct {
-	ID        string    `json:"id"`
-	Username  string    `json:"username"`
-	Role      Role      `json:"role"`
-	Active    bool      `json:"active"`
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
+	ID          string    `json:"id"`
+	Username    string    `json:"username"`
+	Role        Role      `json:"role"`
+	Active      bool      `json:"active"`
+	SCIMDeleted bool      `json:"scimDeleted,omitempty"`
+	CreatedAt   time.Time `json:"createdAt"`
+	UpdatedAt   time.Time `json:"updatedAt"`
 
 	// KySignOn linkage. SSOSub is the OIDC subject and the only key an identity is
 	// matched on; the rest are attributes carried along with it.
@@ -141,9 +142,13 @@ func (s *Store) saveLocked() error {
 	return os.Rename(tmpFile, s.filePath)
 }
 
-// CreateSSOUser provisions the local account for a KySignOn identity. It is the only way
-// an account comes into existence.
+// CreateSSOUser provisions an active local account for a KySignOn identity at sign-in.
 func (s *Store) CreateSSOUser(username string, role Role, ssoSub, ssoUsername, ssoEmail string) (User, error) {
+	return s.CreateDirectoryUser(username, role, ssoSub, ssoUsername, ssoEmail, true)
+}
+
+// CreateDirectoryUser persists the requested active state in the initial write.
+func (s *Store) CreateDirectoryUser(username string, role Role, ssoSub, ssoUsername, ssoEmail string, active bool) (User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -167,7 +172,7 @@ func (s *Store) CreateSSOUser(username string, role Role, ssoSub, ssoUsername, s
 		ID:          id,
 		Username:    strings.TrimSpace(username),
 		Role:        role,
-		Active:      true,
+		Active:      active,
 		CreatedAt:   now,
 		UpdatedAt:   now,
 		SSOSub:      ssoSub,
@@ -331,3 +336,22 @@ func (s *Store) Reactivate(id string) error {
 // itself is unharmed: the recovery-wrapped key envelope lives in vault metadata and is
 // unwrapped client-side, after a KySignOn session already exists. It unlocks the vault,
 // not the site.
+
+// UpdateDirectory atomically applies one complete, validated directory resource.
+func (s *Store) UpdateDirectory(id string, role Role, active bool, username, email string, deleted bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	old, ok := s.users[id]
+	if !ok {
+		return ErrNotFound
+	}
+	u := old
+	u.Role, u.Active, u.SSOUsername, u.SSOEmail, u.SCIMDeleted = role, active, username, email, deleted
+	u.UpdatedAt = time.Now().UTC()
+	s.users[id] = u
+	if err := s.saveLocked(); err != nil {
+		s.users[id] = old
+		return err
+	}
+	return nil
+}
