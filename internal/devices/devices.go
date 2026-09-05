@@ -239,3 +239,15 @@ func (s *Store) Revoke(deviceID string) error {
 	delete(s.devices, deviceID)
 	return s.saveLocked()
 }
+
+// CancelUserPairings prevents an outstanding PIN from outliving deprovisioning.
+func (s *Store) CancelUserPairings(userID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for pin, pairing := range s.pairingPINs {
+		if pairing.UserID == userID {
+			delete(s.pairingPINs, pin)
+			delete(s.pairingCodes, pairing.Secret)
+		}
+	}
+}

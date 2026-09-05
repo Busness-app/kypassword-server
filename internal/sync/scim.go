@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+
+	"github.com/Busness-app/ky-primitives/scim"
 )
 
 // SCIMUser is the subset of a SCIM User resource KyPassword acts on.
@@ -22,23 +24,9 @@ type SCIMUser struct {
 	Active   bool
 }
 
-type scimResource struct {
-	ID       string `json:"id"`
-	UserName string `json:"userName"`
-	Active   bool   `json:"active"`
-	Emails   []struct {
-		Value   string `json:"value"`
-		Primary bool   `json:"primary"`
-	} `json:"emails"`
-	Roles []struct {
-		Value   string `json:"value"`
-		Primary bool   `json:"primary"`
-	} `json:"roles"`
-}
-
 // ParseSCIMUser reads a KySignOn SCIM User resource.
 func ParseSCIMUser(body []byte) (SCIMUser, error) {
-	var res scimResource
+	var res scim.User
 	if err := json.Unmarshal(body, &res); err != nil {
 		return SCIMUser{}, fmt.Errorf("body is not a SCIM user resource: %w", err)
 	}

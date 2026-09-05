@@ -50,20 +50,14 @@ func (s *Server) provisionFromSCIM(u kysync.SCIMUser) (users.User, error) {
 		username = "user_" + truncate(u.ID, 8)
 	}
 
-	created, err := s.users.CreateSSOUser(username, scimRole(u.Role), u.ID, u.Username, u.Email)
+	created, err := s.users.CreateDirectoryUser(username, scimRole(u.Role), u.ID, u.Username, u.Email, u.Active)
 	if errors.Is(err, users.ErrUsernameTaken) {
-		created, err = s.users.CreateSSOUser(username+"_"+truncate(u.ID, 6), scimRole(u.Role), u.ID, u.Username, u.Email)
+		created, err = s.users.CreateDirectoryUser(username+"_"+truncate(u.ID, 6), scimRole(u.Role), u.ID, u.Username, u.Email, u.Active)
 	}
 	if err != nil {
 		return users.User{}, err
 	}
 
-	if !u.Active {
-		if err := s.users.Deactivate(created.ID); err != nil {
-			return users.User{}, err
-		}
-		created.Active = false
-	}
 	return created, nil
 }
 
@@ -97,6 +91,14 @@ func (s *Server) handleSyncWebhook(w http.ResponseWriter, r *http.Request) {
 	switch event {
 	case "user.created":
 		if existing, errGet := s.users.GetBySSOSub(u.ID); errGet == nil {
+			if existing.SCIMDeleted {
+				if err := s.applySCIMUpdate(existing, u); err != nil {
+					http.Error(w, "failed to restore directory account", http.StatusInternalServerError)
+					return
+				}
+				s.record(r, "sync.user_created", existing.ID, "", clientIP(r), "restored retained directory account")
+				break
+			}
 			// KySignOn treats 409 on a create as success, so a retried event settles here
 			// instead of provisioning a second account.
 			s.record(r, "sync.create_duplicate", existing.ID, "", clientIP(r), "replication re-sent create for subject "+u.ID)
@@ -151,10 +153,11 @@ func (s *Server) handleSyncWebhook(w http.ResponseWriter, r *http.Request) {
 		// Deactivate, never delete. A replication event must never destroy vault data: the
 		// vault is the user's, not the directory's, and a deletion in KySignOn is not
 		// consent to erase it.
-		if err := s.users.Deactivate(existing.ID); err != nil {
+		if err := s.users.UpdateDirectory(existing.ID, existing.Role, false, existing.SSOUsername, existing.SSOEmail, true); err != nil {
 			http.Error(w, "failed to deactivate account: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
+		s.revokeDirectorySessions(existing.ID)
 		s.record(r, "sync.user_deleted", existing.ID, "", clientIP(r), "deactivated "+existing.Username+" on KySignOn deletion; vault retained")
 	}
 
@@ -164,22 +167,11 @@ func (s *Server) handleSyncWebhook(w http.ResponseWriter, r *http.Request) {
 // applySCIMUpdate brings a local account in line with the replicated resource. It matches
 // on the sub alone; username and email are attributes of the identity, never keys for it.
 func (s *Server) applySCIMUpdate(existing users.User, u kysync.SCIMUser) error {
-	if role := scimRole(u.Role); existing.Role != role {
-		if err := s.users.SetRole(existing.ID, role); err != nil {
-			return err
-		}
+	if err := s.users.UpdateDirectory(existing.ID, scimRole(u.Role), u.Active, u.Username, u.Email, false); err != nil {
+		return err
 	}
-	if u.Active && !existing.Active {
-		if err := s.users.Reactivate(existing.ID); err != nil {
-			return err
-		}
-	} else if !u.Active && existing.Active {
-		if err := s.users.Deactivate(existing.ID); err != nil {
-			return err
-		}
-	}
-	if existing.SSOUsername != u.Username || existing.SSOEmail != u.Email {
-		return s.users.LinkSSO(existing.ID, existing.SSOSub, u.Username, u.Email)
+	if !u.Active {
+		s.revokeDirectorySessions(existing.ID)
 	}
 	return nil
 }

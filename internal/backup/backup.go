@@ -27,6 +27,7 @@ type Collector struct {
 	SSO           *sso.Store
 	State         *StateStore
 	PairingSecret string
+	SCIMToken     string
 	RetentionDays int
 	DataDir       string
 	AppVersion    string
@@ -70,6 +71,9 @@ func (c Collector) Collect() ([]capsule.File, map[string]any, map[string]any, er
 		{Path: "config/audit.state", Content: auditData.State, Mode: 0600},
 		{Path: "data/audit/audit.jsonl", Content: auditData.Log, Mode: 0600},
 		{Path: "config/restore-manifest.json", Content: manifest, Mode: 0600},
+	}
+	if c.SCIMToken != "" {
+		files = append(files, capsule.File{Path: "config/scim.token", Content: []byte(c.SCIMToken), Mode: 0600})
 	}
 	for _, file := range vaultFiles {
 		files = append(files, capsule.File{Path: "data/vaults/" + file.Path, Content: file.Data, Mode: file.Mode})

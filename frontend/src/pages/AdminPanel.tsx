@@ -34,6 +34,7 @@ export function AdminPanel() {
   const [activeTab, setActiveTab] = useState<"sso" | "users" | "audit" | "backup">("sso");
   const [usersList, setUsersList] = useState<User[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditEntry[]>([]);
+  const [provisioning, setProvisioning] = useState<{ configured: boolean; basePath: string } | null>(null);
   const [auditValid, setAuditValid] = useState<boolean | null>(null);
 
   const [ssoSettings, setSsoSettings] = useState<SSOSettings>({
@@ -50,12 +51,14 @@ export function AdminPanel() {
 
   const loadData = async () => {
     try {
-      const [u, s, a, v] = await Promise.all([
+      const [u, s, a, v, p] = await Promise.all([
         getJSON<User[]>("/api/admin/users"),
         getJSON<SSOSettings>("/api/admin/sso"),
         getJSON<AuditEntry[]>("/api/audit?limit=50"),
         getJSON<{ valid: boolean }>("/api/audit/verify"),
+        getJSON<{ configured: boolean; basePath: string }>("/api/admin/provisioning"),
       ]);
+      setProvisioning(p);
       setUsersList(u || []);
       setSsoSettings(s);
       setAuditLogs(a || []);
@@ -261,6 +264,24 @@ export function AdminPanel() {
         </div>
       ) : activeTab === "users" ? (
         <div>
+          <section className="field-card" style={{ marginBottom: "1.5rem" }}>
+            <h3>SCIM Provisioning</h3>
+            <p>{provisioning?.configured ? "Enabled — provisioning token configured." : "Disabled — set KYPASSWORD_SCIM_TOKEN and restart to enable."}</p>
+            {provisioning ? (
+              <label className="input-group">
+                <span className="input-label">SCIM base URL</span>
+                <input className="input font-mono" readOnly value={new URL(provisioning.basePath, window.location.origin).href} />
+              </label>
+            ) : null}
+            <p style={{ color: "var(--ink-muted)", fontSize: "0.85rem" }}>
+              Configure your provisioning client with this URL and the dedicated bearer token.
+              Map externalId to the KySignOn user ID (OIDC subject). Sign-in still uses KySignOn.
+              Deleting a directory user retains their encrypted vault.
+            </p>
+            <p style={{ color: "var(--ink-muted)", fontSize: "0.85rem" }}>
+              Existing signed KySignOn replication continues at /api/sync/webhook using the kypassword system type.
+            </p>
+          </section>
           <div style={{ marginBottom: "1.5rem" }}>
             <h3 style={{ margin: 0 }}>Registered User Accounts</h3>
             <p style={{ color: "var(--ink-muted)", fontSize: "0.85rem", marginTop: "0.4rem", marginBottom: 0 }}>

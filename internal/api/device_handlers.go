@@ -49,6 +49,14 @@ func (s *Server) handlePairingRedeem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Mint only while the directory account is still active.
+	tokBytes, err := s.startSessionWithToken(dev.UserID)
+	if err != nil {
+		_ = s.devices.Revoke(dev.ID)
+		http.Error(w, "account is inactive", http.StatusUnauthorized)
+		return
+	}
+
 	// If device envelope provided, save it to vault metadata
 	if req.DeviceEnvelope != "" {
 		_ = s.vault.SetDeviceEnvelope(dev.UserID, vault.DeviceEnvelope{
@@ -57,9 +65,6 @@ func (s *Server) handlePairingRedeem(w http.ResponseWriter, r *http.Request) {
 			Envelope: req.DeviceEnvelope,
 		})
 	}
-
-	// Mint initial session for device
-	tokBytes, _ := s.startSessionWithToken(dev.UserID)
 
 	s.record(r, "device.paired", dev.UserID, dev.ID, ip, fmt.Sprintf("paired device %s (%s)", dev.Name, dev.Platform))
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -75,6 +80,9 @@ func (s *Server) handlePairingRedeem(w http.ResponseWriter, r *http.Request) {
 func (s *Server) startSessionWithToken(userID string) (string, error) {
 	s.sessMu.Lock()
 	defer s.sessMu.Unlock()
+	if u, err := s.users.Get(userID); err != nil || !u.Active {
+		return "", fmt.Errorf("account is inactive")
+	}
 
 	tokBytes := randomHex(24)
 	csrfBytes := randomHex(24)

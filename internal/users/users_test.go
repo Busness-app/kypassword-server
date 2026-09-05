@@ -173,3 +173,36 @@ func TestLinkSSORefusesASubjectHeldByAnotherAccount(t *testing.T) {
 		t.Errorf("alice lost her subject: %+v", got)
 	}
 }
+
+func TestDirectoryUpdateFailureKeepsPreviousRecord(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original, err := store.CreateDirectoryUser("inactive", RoleUser, "subject", "inactive", "old@example.com", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if original.Active {
+		t.Fatal("inactive creation was active")
+	}
+	if err := os.Mkdir(filepath.Join(dir, "users.json.tmp"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateDirectory(original.ID, RoleAdmin, true, "changed", "new@example.com", true); err == nil {
+		t.Fatal("expected write failure")
+	}
+	after, _ := store.Get(original.ID)
+	if after != original {
+		t.Fatalf("failed write changed in-memory record: %+v", after)
+	}
+	reloaded, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, _ = reloaded.Get(original.ID)
+	if after != original {
+		t.Fatal("failed write changed durable record")
+	}
+}

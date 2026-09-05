@@ -177,3 +177,28 @@ func TestDecryptGuard(t *testing.T) {
 	root := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
 	guardtest.NoDecryptOutside(t, root, map[string][]string{"cmd/server/backup.go": {"runRestore"}})
 }
+
+func TestSCIMTokenIncludedInRecoveryCapsule(t *testing.T) {
+	collector := testCollector(t)
+	collector.SCIMToken = "synthetic-scim-token-with-at-least-32-characters"
+	files, _, _, err := collector.Collect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, file := range files {
+		if file.Path == "config/scim.token" {
+			found = true
+			if string(file.Content) != collector.SCIMToken || file.Mode != 0600 {
+				t.Fatal("wrong SCIM token snapshot")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("SCIM token missing from sealed payload inputs")
+	}
+	result, err := RunDrill(context.Background(), collector)
+	if err != nil || !result.Passed {
+		t.Fatalf("SCIM-aware restore drill: %+v %v", result, err)
+	}
+}
