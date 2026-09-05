@@ -36,7 +36,9 @@ write-once pins, sealing, delivery, retention, schedule calculation, drill and r
 - Unpair removes URL/token only. Pins, topology, receipts and local copies stay. Remote
   revocation is a separate KyRecovery-admin action. Status never exposes a token.
 - Keep partial local/remote results visible (HTTP 207 and an alert) and persist the last outcome.
-  Preserve backup.deposited/backup.deposit_failed audit actions and log scheduled outcomes. Bound audit
+  Preserve backup.deposited/backup.deposit_failed audit actions and log scheduled outcomes.
+  A confirmed deposit with ErrReceiptUnrecorded keeps backup.deposited and the receipt
+  warning; a failed destination (including LocalError) still uses backup.deposit_failed. Bound audit
   fields, omit remote response bodies (they can reflect credentials), and retain the
   existing session CSRF/fresh-admin route gates.
 
