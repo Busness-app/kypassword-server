@@ -65,6 +65,7 @@ type Config struct {
 	ConfigDir     string
 	PairingSecret string
 	RetentionDays int
+	Backup        backup.Config
 	AppVersion    string
 }
 
@@ -105,11 +106,11 @@ func NewServer(cfg Config) (*Server, error) {
 
 	ssoSt := sso.NewStore(cfg.ConfigDir)
 	backupState := backup.NewStateStore(cfg.ConfigDir)
-	recovery := backup.NewClient()
+	recovery := backup.NewClient(cfg.Backup.AllowPrivate)
 	collector := backup.Collector{
 		Vault: vStore, Audit: aStore, Users: uStore, Devices: dStore, SSO: ssoSt,
 		State: backupState, PairingSecret: cfg.PairingSecret, RetentionDays: cfg.RetentionDays,
-		AppVersion: cfg.AppVersion,
+		AppVersion: cfg.AppVersion, DataDir: cfg.DataDir,
 	}
 
 	s := &Server{
@@ -126,7 +127,7 @@ func NewServer(cfg Config) (*Server, error) {
 		flushStop:     make(chan struct{}),
 		flushDone:     make(chan struct{}),
 	}
-	s.backupService = &backup.Service{State: backupState, Collector: collector, Client: recovery}
+	s.backupService = &backup.Service{State: backupState, Collector: collector, Client: recovery, Config: cfg.Backup}
 	go s.flushSuppressed()
 
 	return s, nil
@@ -185,6 +186,9 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/backup/export-capsule", s.withFreshAdmin(s.handleExportCapsule))
 	mux.HandleFunc("POST /api/backup/pair-remote", s.withFreshAdmin(s.handlePairRemoteRecovery))
 	mux.HandleFunc("POST /api/backup/deposit", s.withFreshAdmin(s.handleDepositBackup))
+	mux.HandleFunc("POST /api/backup/pin-key", s.withFreshAdmin(s.handlePinRecoveryKey))
+	mux.HandleFunc("DELETE /api/backup/pairing", s.withFreshAdmin(s.handleUnpairRecovery))
+	mux.HandleFunc("PUT /api/backup/schedule", s.withFreshAdmin(s.handleBackupSchedule))
 	mux.HandleFunc("GET /api/backup/status", s.withAdmin(s.handleBackupStatus))
 
 	return s.corsMiddleware(mux)

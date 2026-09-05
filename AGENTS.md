@@ -13,7 +13,7 @@ KyPassword Server is a zero-knowledge KeePass v4 management and synchronization 
 6. **Native Device Pairing**: 90-second PIN and QR code protocol (`/api/devices/pairing/*`) for mobile apps and browser extensions.
 7. **Tamper-Evident Audit Logging**: Cryptographic hash-chained audit trail (`/api/audit/*`).
 8. **KySecurity Patina Interface**: React + TypeScript frontend using Space Grotesk, IBM Plex Mono, and Patina dark theme.
-9. **Blind KyRecovery Deposits**: `internal/backup` snapshots encrypted vault and operational state, seals `kycap/3` capsules to the pinned suite recovery public key, and deposits them without giving KyRecovery or this server the recovery private key.
+9. **Blind KyRecovery Deposits**: `internal/backup` snapshots encrypted vault and operational state, uses `ky-primitives/recoveryclient` to seal `kycap/3` capsules to the pinned suite recovery public key, and writes local copies and deposits them without giving KyRecovery or this server the recovery private key.
 
 ## Authentication
 
@@ -119,8 +119,8 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
 
 ## Child DOX Index
 
-- `internal/backup/AGENTS.md`: owns KyRecovery pairing state, SSRF-safe transport, capsule
-  collection/deposit, and restore validation. Vault validation is ciphertext/checksum-only;
+- `internal/backup/AGENTS.md`: owns the recoveryclient settings/sealer adapter, file-store
+  collection, product restore validation, and backup integration. Vault validation is ciphertext/checksum-only;
   only drills and restores may hold private recovery material.
 
 - `frontend/src/lib/storage.ts`: manages the persistent IndexedDB `keys` vault on trusted devices

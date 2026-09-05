@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/Busness-app/ky-primitives/recoveryclient"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/Busness-app/ky-primitives/capsule"
 	"github.com/Busness-app/kypassword-server/internal/audit"
@@ -26,6 +28,7 @@ type Collector struct {
 	State         *StateStore
 	PairingSecret string
 	RetentionDays int
+	DataDir       string
 	AppVersion    string
 }
 
@@ -91,73 +94,83 @@ func (c Collector) Collect() ([]capsule.File, map[string]any, map[string]any, er
 	return files, deps, recipe, nil
 }
 
+func payload(files []capsule.File, deps, recipe map[string]any, version string) recoveryclient.Payload {
+	p := recoveryclient.Payload{ServiceName: ServiceName, AppVersion: version, Dependencies: deps, VerificationRecipe: recipe}
+	for _, f := range files {
+		p.Files = append(p.Files, recoveryclient.File{Path: f.Path, Data: f.Content, Mode: int64(f.Mode)})
+	}
+	return p
+}
+func (c Collector) Payload() (recoveryclient.Payload, error) {
+	f, d, r, e := c.Collect()
+	return payload(f, d, r, c.AppVersion), e
+}
 func Seal(files []capsule.File, deps, recipe map[string]any, version string, key RecoveryKey) ([]byte, capsule.Manifest, error) {
-	if key.Public.IsZero() {
-		return nil, capsule.Manifest{}, ErrNotPaired
-	}
-	return capsule.Seal(ServiceName, version, files, deps, recipe, key.Threshold, key.TotalShares, key.Public)
+	return recoveryclient.Seal(payload(files, deps, recipe, version), key)
 }
+func FilenameSafe(s string) string { return recoveryclient.FilenameSafe(s) }
 
-func FilenameSafe(value string) string {
-	var out []rune
-	for _, r := range value {
-		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '_' || r == '-' {
-			out = append(out, r)
-		} else {
-			out = append(out, '-')
-		}
-	}
-	return string(out)
+type RunSummary struct {
+	At         time.Time `json:"at"`
+	CapsuleID  string    `json:"capsuleId,omitempty"`
+	LocalPath  string    `json:"localPath,omitempty"`
+	LocalError string    `json:"localError,omitempty"`
+	Deposited  bool      `json:"deposited"`
+	Error      string    `json:"error,omitempty"`
 }
-
+type Config struct {
+	Directory    string
+	Keep         int
+	AllowPrivate bool
+	Interval     time.Duration
+}
 type Service struct {
 	State     *StateStore
 	Collector Collector
 	Client    Depositor
+	Config    Config
 	mu        sync.Mutex
-	wg        sync.WaitGroup
 }
 
-func (s *Service) Deposit(ctx context.Context) (Receipt, capsule.Manifest, error) {
+func (s *Service) Run(ctx context.Context) (recoveryclient.Result, error) {
 	if !s.mu.TryLock() {
-		return Receipt{}, capsule.Manifest{}, ErrDepositInProgress
+		return recoveryclient.Result{}, ErrDepositInProgress
 	}
-	s.wg.Add(1)
-	defer func() { s.wg.Done(); s.mu.Unlock() }()
-	pairing, err := s.State.LoadPairing()
-	if err != nil {
-		return Receipt{}, capsule.Manifest{}, err
+	defer s.mu.Unlock()
+	s.State.operationMu.Lock()
+	defer s.State.operationMu.Unlock()
+	// Stamp even degraded attempts so the scheduler does not retry every tick.
+	if _, err := s.State.RecoveryKey(); err != nil && !errors.Is(err, ErrNotPaired) {
+		if e := s.State.Set("backup_last_attempt", time.Now().UTC().Format(time.RFC3339)); e != nil {
+			return recoveryclient.Result{}, e
+		}
+		return recoveryclient.Result{}, s.saveRun(recoveryclient.Result{}, err)
 	}
-	files, deps, recipe, err := s.Collector.Collect()
-	if err != nil {
-		return Receipt{}, capsule.Manifest{}, err
-	}
-	raw, manifest, err := Seal(files, deps, recipe, s.Collector.AppVersion, pairing.Key)
-	if err != nil {
-		return Receipt{}, capsule.Manifest{}, err
-	}
-	receipt, err := s.Client.Deposit(ctx, pairing.URL, pairing.Token, raw)
-	if err != nil {
-		return Receipt{}, manifest, err
-	}
-	if receipt.CapsuleID != manifest.CapsuleID {
-		return Receipt{}, manifest, fmt.Errorf("%w: receipt names capsule %s, sent %s", ErrRemote, receipt.CapsuleID, manifest.CapsuleID)
-	}
-	if err := s.State.SaveReceipt(receipt); err != nil {
-		return receipt, manifest, fmt.Errorf("%w: %v", ErrReceiptUnrecorded, err)
-	}
-	return receipt, manifest, nil
+	result, err := recoveryclient.Run(ctx, recoveryclient.RunConfig{DataDir: s.State.dir, AppName: ServiceName,
+		AppVersion: s.Collector.AppVersion, BackupDir: s.Config.Directory, Keep: s.Config.Keep, Sealer: tokenSealer{s.State}}, s.State, s.Collector.Payload, s.Client)
+	return result, s.saveRun(result, err)
 }
-
-func (s *Service) Wait() { s.wg.Wait() }
-
-func Outcome(receipt Receipt, manifest capsule.Manifest, err error) (action, resource, details string) {
-	switch {
-	case err == nil:
-		return "backup.deposited", receipt.CapsuleID, "digest=" + receipt.Digest
-	case errors.Is(err, ErrReceiptUnrecorded):
-		return "backup.deposited", receipt.CapsuleID, AuditSafe("digest=" + receipt.Digest + " receipt_unrecorded: " + err.Error())
-	default:
-		return "backup.deposit_failed", manifest.CapsuleID, AuditSafe(err.Error())
+func (s *Service) saveRun(r recoveryclient.Result, runErr error) error {
+	summary := RunSummary{At: time.Now().UTC(), CapsuleID: AuditSafe(r.Manifest.CapsuleID), LocalPath: AuditSafe(r.LocalPath), LocalError: AuditSafe(r.LocalError), Deposited: r.Receipt != nil}
+	if runErr != nil {
+		summary.Error = AuditSafe(runErr.Error())
 	}
+	s.State.mu.Lock()
+	defer s.State.mu.Unlock()
+	st, err := s.State.loadLocked()
+	if err == nil {
+		st.LastRun = &summary
+		err = s.State.saveLocked(st)
+	}
+	if err != nil {
+		return errors.Join(runErr, fmt.Errorf("backup result could not be recorded: %w", err))
+	}
+	return runErr
+}
+func (s *Service) Wait() { s.mu.Lock(); s.mu.Unlock() }
+func Outcome(r recoveryclient.Result, err error) (string, string) {
+	action, outcome, details := recoveryclient.Outcome(r, err)
+	details["outcome"] = outcome
+	b, _ := json.Marshal(details)
+	return action, string(b)
 }

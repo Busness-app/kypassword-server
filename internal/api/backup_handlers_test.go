@@ -3,6 +3,8 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -102,5 +104,54 @@ func TestExportCapsuleRequiresCSRF(t *testing.T) {
 	srv.Routes().ServeHTTP(rec, request)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("export without CSRF = %d, want 403", rec.Code)
+	}
+}
+
+func TestEveryBackupMutationRequiresCSRFAndAdmin(t *testing.T) {
+	srv := newTestServer(t)
+	_, admin := signedInUser(t, srv, "admin", users.RoleAdmin)
+	_, user := signedInUser(t, srv, "user", users.RoleUser)
+	routes := append(append([]struct{ method, path string }{}, destructiveBackupRoutes...), struct{ method, path string }{http.MethodPost, "/api/backup/drill"})
+	for _, route := range routes {
+		r := httptest.NewRequest(route.method, route.path, strings.NewReader(`{}`))
+		r.AddCookie(admin)
+		w := httptest.NewRecorder()
+		srv.Routes().ServeHTTP(w, r)
+		if w.Code != 403 {
+			t.Errorf("%s without CSRF: %d", route.path, w.Code)
+		}
+		w = httptest.NewRecorder()
+		srv.Routes().ServeHTTP(w, csrfRequest(t, srv, user, route.method, route.path, `{}`))
+		if w.Code != 403 {
+			t.Errorf("%s nonadmin: %d", route.path, w.Code)
+		}
+	}
+}
+func TestPinScheduleAndLocalBackupRoutes(t *testing.T) {
+	srv := newTestServer(t)
+	_, admin := signedInUser(t, srv, "admin", users.RoleAdmin)
+	srv.backupService.Config.Directory = t.TempDir()
+	srv.backupService.Config.Keep = 2
+	key, e := recoverykey.Generate()
+	if e != nil {
+		t.Fatal(e)
+	}
+	body, _ := json.Marshal(map[string]any{"publicKey": base64.StdEncoding.EncodeToString(key.Public().Bytes()), "threshold": 2, "totalShares": 3})
+	call := func(method, path, body string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		srv.Routes().ServeHTTP(w, csrfRequest(t, srv, admin, method, path, body))
+		return w
+	}
+	if w := call("POST", "/api/backup/pin-key", string(body)); w.Code != 200 {
+		t.Fatalf("pin: %d %s", w.Code, w.Body.String())
+	}
+	if w := call("PUT", "/api/backup/schedule", `{"intervalSec":900}`); w.Code != 200 {
+		t.Fatalf("schedule: %d %s", w.Code, w.Body.String())
+	}
+	if w := call("PUT", "/api/backup/schedule", `{"intervalSec":899}`); w.Code != 400 {
+		t.Fatalf("bad interval: %d", w.Code)
+	}
+	if w := call("POST", "/api/backup/deposit", `{}`); w.Code != 200 || !bytes.Contains(w.Body.Bytes(), []byte("local_path")) {
+		t.Fatalf("local backup: %d %s", w.Code, w.Body.String())
 	}
 }

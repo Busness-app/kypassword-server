@@ -128,6 +128,21 @@ func (s *Store) Snapshot() (Snapshot, error) {
 	return Snapshot{Log: logData, State: stateData, Key: bytes.Clone(s.key)}, nil
 }
 
+// VerifySnapshot verifies exact captured bytes without environment overrides or repairing files.
+func VerifySnapshot(snapshot Snapshot) error {
+	if len(snapshot.Key) != keyBytes {
+		return errors.New("invalid snapshot audit key")
+	}
+	var state chainState
+	if err := json.Unmarshal(snapshot.State, &state); err != nil {
+		return err
+	}
+	if state.Count == 0 && state.Hash == "" {
+		state.Hash = genesisHash
+	}
+	return auditchain.VerifyStream(snapshot.Key, streamRecords(json.NewDecoder(bytes.NewReader(snapshot.Log))), auditchain.Anchor{Count: state.Count, Hash: state.Hash})
+}
+
 // legacyHash is the keyed digest this server used before the chain moved to the
 // shared format. It joined the fields with a bare "|", so content carrying the
 // delimiter could be shifted into a neighbouring field without changing the digest.

@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -17,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Busness-app/kypassword-server/internal/api"
+	"github.com/Busness-app/kypassword-server/internal/backup"
 	"github.com/Busness-app/kypassword-server/internal/sso"
 	"github.com/Busness-app/kypassword-server/internal/users"
 )
@@ -55,7 +55,7 @@ func main() {
 			retentionDays = val
 		}
 	}
-	depositInterval, err := backupDepositInterval(os.Getenv("KYPASSWORD_BACKUP_DEPOSIT_INTERVAL"))
+	backupConfig, err := backup.ConfigFromEnv()
 	if err != nil {
 		log.Fatalf("KYPASSWORD_BACKUP_DEPOSIT_INTERVAL: %v", err)
 	}
@@ -74,12 +74,16 @@ func main() {
 		}
 	}
 
+	if backupConfig.AllowPrivate {
+		log.Print("[BACKUP] private KyRecovery destinations explicitly enabled")
+	}
 	srv, err := api.NewServer(api.Config{
 		DataDir:       dataDir,
 		ConfigDir:     configDir,
 		PairingSecret: pairingSecret,
 		RetentionDays: retentionDays,
 		AppVersion:    buildVersion(),
+		Backup:        backupConfig,
 	})
 	if err != nil {
 		log.Fatalf("failed to initialize server: %v", err)
@@ -142,10 +146,7 @@ func main() {
 	schedulerDone := make(chan struct{})
 	go func() {
 		defer close(schedulerDone)
-		if depositInterval == 0 {
-			return
-		}
-		ticker := time.NewTicker(depositInterval)
+		ticker := time.NewTicker(time.Minute)
 		defer ticker.Stop()
 		for {
 			select {
@@ -170,22 +171,6 @@ func main() {
 	srv.WaitForBackups()
 	srv.Close()
 	log.Println("server stopped.")
-}
-
-const minBackupDepositInterval = 15 * time.Minute
-
-func backupDepositInterval(value string) (time.Duration, error) {
-	if value == "" {
-		return 24 * time.Hour, nil
-	}
-	d, err := time.ParseDuration(value)
-	if err != nil {
-		return 0, err
-	}
-	if d < 0 || d > 0 && d < minBackupDepositInterval {
-		return 0, fmt.Errorf("must be 0 or at least %s", minBackupDepositInterval)
-	}
-	return d, nil
 }
 
 func buildVersion() string {

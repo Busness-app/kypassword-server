@@ -6,11 +6,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"github.com/Busness-app/ky-primitives/recoveryclient/guardtest"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"testing"
 	"time"
 
@@ -98,7 +98,7 @@ func testCollector(t *testing.T) Collector {
 		t.Fatal(err)
 	}
 	return Collector{Vault: v, Audit: a, Users: u, Devices: d, SSO: ssoStore,
-		State: NewStateStore(configDir), PairingSecret: "replication-secret", RetentionDays: 90, AppVersion: "test"}
+		State: NewStateStore(configDir), DataDir: dataDir, PairingSecret: "replication-secret", RetentionDays: 90, AppVersion: "test"}
 }
 
 type openingDepositor struct {
@@ -126,16 +126,16 @@ func TestDepositAndRestoreDrillRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	service := Service{State: collector.State, Collector: collector, Client: openingDepositor{t: t, private: private}}
-	receipt, manifest, err := service.Deposit(t.Context())
+	result, err := service.Run(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if receipt.CapsuleID != manifest.CapsuleID {
+	if result.Receipt.CapsuleID != result.Manifest.CapsuleID {
 		t.Fatal("receipt and manifest capsule IDs differ")
 	}
-	result, err := RunDrill(t.Context(), collector)
-	if err != nil || !result.Passed {
-		t.Fatalf("RunDrill = %+v, %v", result, err)
+	drill, err := RunDrill(t.Context(), collector)
+	if err != nil || !drill.Passed {
+		t.Fatalf("RunDrill = %+v, %v", drill, err)
 	}
 }
 
@@ -145,19 +145,12 @@ func TestRecoveryURLPolicy(t *testing.T) {
 		"https://recovery.example/#fragment", "https://127.0.0.1", "https://100.64.0.1",
 		"https://192.0.2.1", "https://[64:ff9b::a00:1]",
 	} {
-		if _, err := endpoint(value, "/api/pairing/claim"); err == nil {
+		if err := ValidateURL(value, false); err == nil {
 			t.Errorf("endpoint accepted %q", value)
 		}
 	}
-	if _, err := endpoint("https://recovery.example", "/api/pairing/claim"); err != nil {
+	if err := ValidateURL("https://recovery.example", false); err != nil {
 		t.Fatalf("public HTTPS origin rejected: %v", err)
-	}
-}
-
-func TestRecoveryClientRefusesRedirects(t *testing.T) {
-	client := NewClient()
-	if err := client.http.CheckRedirect(nil, nil); err == nil {
-		t.Fatal("redirect was accepted")
 	}
 }
 
@@ -174,7 +167,7 @@ func TestDepositRejectsMismatchedReceiptCapsule(t *testing.T) {
 		t.Fatal(err)
 	}
 	service := Service{State: collector.State, Collector: collector, Client: mismatchedDepositor{}}
-	if _, _, err := service.Deposit(t.Context()); !errors.Is(err, ErrRemote) {
+	if _, err := service.Run(t.Context()); !errors.Is(err, ErrRemote) {
 		t.Fatalf("mismatched receipt error = %v", err)
 	}
 }
@@ -182,28 +175,5 @@ func TestDepositRejectsMismatchedReceiptCapsule(t *testing.T) {
 func TestDecryptGuard(t *testing.T) {
 	_, file, _, _ := runtime.Caller(0)
 	root := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
-	count := 0
-	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
-			return nil
-		}
-		count++
-		b, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		if bytes.Contains(b, []byte("recoverykey.Combine(")) && filepath.Base(path) != "drill.go" {
-			t.Errorf("private recovery material combined outside restore/drill: %s", path)
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if count < 20 {
-		t.Fatalf("decrypt guard walked only %d Go files", count)
-	}
+	guardtest.NoDecryptOutside(t, root, map[string][]string{"cmd/server/backup.go": {"runRestore"}})
 }

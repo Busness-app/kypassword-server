@@ -2,6 +2,7 @@
 package backup
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -10,14 +11,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
-	"time"
 
 	"github.com/Busness-app/ky-primitives/capsule"
 	"github.com/Busness-app/ky-primitives/keyfile"
+	"github.com/Busness-app/ky-primitives/recoveryclient"
 	"github.com/Busness-app/ky-primitives/recoverykey"
 )
 
@@ -32,35 +33,28 @@ const (
 )
 
 var (
-	ErrNotPaired         = errors.New("backup: pair with KyRecovery first")
-	ErrKeyPinMissing     = errors.New("backup: paired recovery public key is missing")
-	ErrKeyMismatch       = errors.New("backup: recovery public key does not match its pin")
-	ErrRemote            = errors.New("backup: KyRecovery")
-	ErrReceiptUnrecorded = errors.New("backup: deposit succeeded but receipt was not recorded")
-	ErrDepositInProgress = errors.New("backup: a deposit is already in progress")
+	ErrNotPaired         = recoveryclient.ErrNotPaired
+	ErrKeyPinMissing     = recoveryclient.ErrKeyPinMissing
+	ErrKeyMismatch       = recoveryclient.ErrKeyMismatch
+	ErrRemote            = recoveryclient.ErrRemote
+	ErrReceiptUnrecorded = recoveryclient.ErrReceiptUnrecorded
+	ErrDepositInProgress = recoveryclient.ErrInProgress
 	ErrInvalidURL        = errors.New("backup: invalid KyRecovery URL")
 )
 
-type RecoveryKey struct {
-	Public      recoverykey.PublicKey
-	Threshold   int
-	TotalShares int
-}
-
-type Receipt struct {
-	CapsuleID   string    `json:"capsule_id"`
-	Digest      string    `json:"digest"`
-	SizeBytes   int64     `json:"size_bytes"`
-	DepositedAt time.Time `json:"deposited_at"`
-}
+type RecoveryKey = recoveryclient.RecoveryKey
+type Receipt = recoveryclient.Receipt
 
 type persistedState struct {
-	RecoveryURL   string   `json:"recoveryUrl,omitempty"`
-	SealedToken   string   `json:"sealedToken,omitempty"`
-	RecoveryKeyID string   `json:"recoveryKeyId,omitempty"`
-	Threshold     int      `json:"threshold,omitempty"`
-	TotalShares   int      `json:"totalShares,omitempty"`
-	LastDeposit   *Receipt `json:"lastDeposit,omitempty"`
+	RecoveryURL   string      `json:"recoveryUrl,omitempty"`
+	SealedToken   string      `json:"sealedToken,omitempty"`
+	RecoveryKeyID string      `json:"recoveryKeyId,omitempty"`
+	Threshold     int         `json:"threshold,omitempty"`
+	TotalShares   int         `json:"totalShares,omitempty"`
+	LastDeposit   *Receipt    `json:"lastDeposit,omitempty"`
+	Interval      *string     `json:"intervalSec,omitempty"`
+	LastAttempt   *string     `json:"lastAttempt,omitempty"`
+	LastRun       *RunSummary `json:"lastRun,omitempty"`
 }
 
 type Status struct {
@@ -70,18 +64,16 @@ type Status struct {
 	Threshold     int      `json:"threshold,omitempty"`
 	TotalShares   int      `json:"totalShares,omitempty"`
 	KeyHealthy    bool     `json:"keyHealthy"`
+	Error         string   `json:"error,omitempty"`
 	LastDeposit   *Receipt `json:"lastDeposit,omitempty"`
 }
 
-type Pairing struct {
-	URL   string
-	Token string
-	Key   RecoveryKey
-}
+type Pairing = recoveryclient.Pairing
 
 type StateStore struct {
-	mu  sync.Mutex
-	dir string
+	mu          sync.Mutex
+	operationMu sync.Mutex
+	dir         string
 }
 
 func NewStateStore(configDir string) *StateStore { return &StateStore{dir: configDir} }
@@ -97,6 +89,9 @@ func (s *StateStore) loadLocked() (persistedState, error) {
 	}
 	if err != nil {
 		return persistedState{}, err
+	}
+	if len(bytes.TrimSpace(b)) == 0 || bytes.TrimSpace(b)[0] != '{' {
+		return persistedState{}, errors.New("invalid backup settings object")
 	}
 	var state persistedState
 	if err := json.Unmarshal(b, &state); err != nil {
@@ -120,55 +115,140 @@ func (s *StateStore) saveLocked(state persistedState) error {
 	return os.Rename(tmp, s.statePath())
 }
 
-func validTopology(threshold, total int) bool {
-	return threshold >= 2 && total >= threshold && total <= 255
-}
+// lockedSettings is used while StateStore.mu holds the complete lifecycle operation.
+type lockedSettings struct{ s *StateStore }
 
-// StorePairing pins the recovery key before persisting the deposit credential.
-// A partial failure therefore cannot make a later, different key look like a first pairing.
-func (s *StateStore) StorePairing(serverURL, token string, key RecoveryKey) error {
-	if serverURL == "" || token == "" || key.Public.IsZero() || !validTopology(key.Threshold, key.TotalShares) {
-		return errors.New("backup: incomplete pairing result")
+func (a lockedSettings) Get(key string) (string, error) {
+	st, err := a.s.loadLocked()
+	if err != nil {
+		return "", err
 	}
+	switch key {
+	case "kyrecovery_url":
+		if st.RecoveryURL != "" {
+			return st.RecoveryURL, nil
+		}
+	case "kyrecovery_token_enc":
+		if st.SealedToken != "" {
+			return st.SealedToken, nil
+		}
+	case "kyrecovery_key_id":
+		if st.RecoveryKeyID != "" {
+			return st.RecoveryKeyID, nil
+		}
+	case "kyrecovery_threshold":
+		if st.Threshold != 0 {
+			return strconv.Itoa(st.Threshold), nil
+		}
+	case "kyrecovery_total_shares":
+		if st.TotalShares != 0 {
+			return strconv.Itoa(st.TotalShares), nil
+		}
+	case "kyrecovery_last_deposit":
+		if st.LastDeposit != nil {
+			b, e := json.Marshal(st.LastDeposit)
+			return string(b), e
+		}
+	case "backup_interval_sec":
+		if st.Interval != nil {
+			return *st.Interval, nil
+		}
+	case "backup_last_attempt":
+		if st.LastAttempt != nil {
+			return *st.LastAttempt, nil
+		}
+	default:
+		return "", fmt.Errorf("unknown backup setting %q", key)
+	}
+	return "", recoveryclient.ErrNotFound
+}
+func (a lockedSettings) Set(key, value string) error { return a.write(key, &value) }
+func (a lockedSettings) Delete(key string) error     { return a.write(key, nil) }
+func (a lockedSettings) write(key string, value *string) error {
+	st, err := a.s.loadLocked()
+	if err != nil {
+		return err
+	}
+	v := ""
+	if value != nil {
+		v = *value
+	}
+	switch key {
+	case "kyrecovery_url":
+		st.RecoveryURL = v
+	case "kyrecovery_token_enc":
+		st.SealedToken = v
+	case "kyrecovery_key_id":
+		st.RecoveryKeyID = v
+	case "kyrecovery_threshold":
+		st.Threshold, err = strconv.Atoi(v)
+	case "kyrecovery_total_shares":
+		st.TotalShares, err = strconv.Atoi(v)
+	case "kyrecovery_last_deposit":
+		st.LastDeposit = nil
+		if value != nil {
+			err = json.Unmarshal([]byte(v), &st.LastDeposit)
+		}
+	case "backup_interval_sec":
+		st.Interval = value
+	case "backup_last_attempt":
+		st.LastAttempt = value
+	default:
+		return fmt.Errorf("unknown backup setting %q", key)
+	}
+	if err != nil {
+		return err
+	}
+	return a.s.saveLocked(st)
+}
+func (s *StateStore) Get(key string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return (lockedSettings{s}).Get(key)
+}
+func (s *StateStore) Set(key, value string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return (lockedSettings{s}).Set(key, value)
+}
+func (s *StateStore) Delete(key string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return (lockedSettings{s}).Delete(key)
+}
 
-	state, err := s.loadLocked()
-	if err != nil {
-		return err
-	}
-	if state.RecoveryKeyID != "" && state.RecoveryKeyID != key.Public.ID() {
-		return fmt.Errorf("%w: already pinned to %s", fs.ErrExist, state.RecoveryKeyID)
-	}
-	if raw, err := keyfile.LoadEncoded(s.keyPath(), recoveryKeyLength, keyfile.Raw); err == nil {
-		stored, parseErr := recoverykey.ParsePublicKey(raw)
-		if parseErr != nil {
-			return parseErr
-		}
-		if stored.ID() != key.Public.ID() {
-			return fmt.Errorf("%w: recovery.pub contains %s", fs.ErrExist, stored.ID())
-		}
-	} else if errors.Is(err, os.ErrNotExist) {
-		if err := keyfile.Store(s.keyPath(), key.Public.Bytes(), keyfile.Raw); err != nil {
-			return err
-		}
-	} else {
-		return err
-	}
+type tokenSealer struct{ s *StateStore }
 
-	state.RecoveryKeyID = key.Public.ID()
-	state.Threshold = key.Threshold
-	state.TotalShares = key.TotalShares
-	if err := s.saveLocked(state); err != nil {
+func (a tokenSealer) Seal(p []byte) (string, error) { return a.s.sealTokenLocked(string(p)) }
+func (a tokenSealer) Open(v string) ([]byte, error) {
+	p, e := a.s.openTokenLocked(v)
+	return []byte(p), e
+}
+
+func (s *StateStore) StorePairing(url, token string, key RecoveryKey) error {
+	s.operationMu.Lock()
+	defer s.operationMu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	settings := lockedSettings{s}
+	if err := recoveryclient.StoreRecoveryKey(s.dir, settings, key); err != nil {
 		return err
 	}
-	sealed, err := s.sealTokenLocked(token)
-	if err != nil {
-		return err
-	}
-	state.RecoveryURL = serverURL
-	state.SealedToken = sealed
-	return s.saveLocked(state)
+	return recoveryclient.StorePairing(settings, tokenSealer{s}, url, token)
+}
+func (s *StateStore) Pin(key RecoveryKey) error {
+	s.operationMu.Lock()
+	defer s.operationMu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return recoveryclient.StoreRecoveryKey(s.dir, lockedSettings{s}, key)
+}
+func (s *StateStore) Unpair() error {
+	s.operationMu.Lock()
+	defer s.operationMu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return recoveryclient.ClearPairing(lockedSettings{s})
 }
 
 func (s *StateStore) sealTokenLocked(token string) (string, error) {
@@ -210,87 +290,57 @@ func (s *StateStore) openTokenLocked(encoded string) (string, error) {
 	return string(plain), err
 }
 
-func (s *StateStore) loadRecoveryKeyLocked(state persistedState) (RecoveryKey, error) {
-	if state.RecoveryKeyID == "" {
-		return RecoveryKey{}, ErrNotPaired
+func (s *StateStore) recoveryKeyLocked() (RecoveryKey, error) {
+	key, err := recoveryclient.LoadRecoveryKey(s.dir, lockedSettings{s})
+	if errors.Is(err, ErrNotPaired) {
+		if _, pinErr := (lockedSettings{s}).Get("kyrecovery_key_id"); pinErr == nil {
+			return key, ErrKeyPinMissing
+		}
 	}
-	raw, err := keyfile.LoadEncoded(s.keyPath(), recoveryKeyLength, keyfile.Raw)
-	if errors.Is(err, os.ErrNotExist) {
-		return RecoveryKey{}, ErrKeyPinMissing
-	}
-	if err != nil {
-		return RecoveryKey{}, err
-	}
-	public, err := recoverykey.ParsePublicKey(raw)
-	if err != nil {
-		return RecoveryKey{}, err
-	}
-	if public.ID() != state.RecoveryKeyID {
-		return RecoveryKey{}, ErrKeyMismatch
-	}
-	if !validTopology(state.Threshold, state.TotalShares) {
-		return RecoveryKey{}, errors.New("backup: invalid stored custodian topology")
-	}
-	return RecoveryKey{Public: public, Threshold: state.Threshold, TotalShares: state.TotalShares}, nil
+	return key, err
 }
-
-func (s *StateStore) LoadPairing() (Pairing, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	state, err := s.loadLocked()
-	if err != nil {
-		return Pairing{}, err
-	}
-	key, err := s.loadRecoveryKeyLocked(state)
-	if err != nil {
-		return Pairing{}, err
-	}
-	if state.RecoveryURL == "" || state.SealedToken == "" {
-		return Pairing{}, ErrNotPaired
-	}
-	token, err := s.openTokenLocked(state.SealedToken)
-	if err != nil {
-		return Pairing{}, err
-	}
-	return Pairing{URL: state.RecoveryURL, Token: token, Key: key}, nil
-}
-
 func (s *StateStore) RecoveryKey() (RecoveryKey, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	state, err := s.loadLocked()
-	if err != nil {
-		return RecoveryKey{}, err
-	}
-	return s.loadRecoveryKeyLocked(state)
+	return s.recoveryKeyLocked()
 }
-
+func (s *StateStore) LoadPairing() (Pairing, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := s.recoveryKeyLocked(); err != nil {
+		return Pairing{}, err
+	}
+	return recoveryclient.LoadPairing(s.dir, lockedSettings{s}, tokenSealer{s})
+}
 func (s *StateStore) Status() (Status, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	state, err := s.loadLocked()
+	st, err := s.loadLocked()
 	if err != nil {
 		return Status{}, err
 	}
-	status := Status{Paired: state.RecoveryKeyID != "", RecoveryURL: state.RecoveryURL,
-		RecoveryKeyID: state.RecoveryKeyID, Threshold: state.Threshold,
-		TotalShares: state.TotalShares, LastDeposit: state.LastDeposit}
-	if status.Paired {
-		_, err = s.loadRecoveryKeyLocked(state)
+	status := Status{Paired: st.RecoveryURL != "" && st.SealedToken != "", RecoveryURL: st.RecoveryURL,
+		RecoveryKeyID: st.RecoveryKeyID, Threshold: st.Threshold, TotalShares: st.TotalShares, LastDeposit: st.LastDeposit}
+	if st.RecoveryKeyID != "" {
+		_, err = s.recoveryKeyLocked()
 		status.KeyHealthy = err == nil
+		if err != nil {
+			status.Error = "recovery public key is missing or mismatched"
+		}
+	}
+	if st.RecoveryURL != "" || st.SealedToken != "" {
+		if _, err := recoveryclient.LoadPairing(s.dir, lockedSettings{s}, tokenSealer{s}); err != nil {
+			status.Error = "recovery pairing is incomplete or cannot be opened"
+		}
 	}
 	return status, nil
 }
-
 func (s *StateStore) SaveReceipt(receipt Receipt) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	state, err := s.loadLocked()
+	b, err := json.Marshal(receipt)
 	if err != nil {
 		return err
 	}
-	state.LastDeposit = &receipt
-	return s.saveLocked(state)
+	return s.Set("kyrecovery_last_deposit", string(b))
 }
 
 func (s *StateStore) CapsuleFiles() ([]capsule.File, error) {
@@ -304,7 +354,16 @@ func (s *StateStore) CapsuleFiles() ([]capsule.File, error) {
 		return nil, nil
 	}
 	var files []capsule.File
-	for _, item := range []struct{ name string }{{stateFile}, {publicKeyFile}, {tokenKeyFile}} {
+	names := []string{stateFile, publicKeyFile}
+	if state.SealedToken != "" {
+		names = append(names, tokenKeyFile)
+	} else if _, err := os.Stat(s.tokenPath()); err == nil {
+		names = append(names, tokenKeyFile)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	for _, name := range names {
+		item := struct{ name string }{name}
 		b, err := os.ReadFile(filepath.Join(s.dir, item.name))
 		if err != nil {
 			return nil, fmt.Errorf("required backup member %s: %w", item.name, err)
