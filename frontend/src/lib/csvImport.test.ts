@@ -303,3 +303,13 @@ test("duplicate selection ignores unchecked rows and preserves every changed con
   applyImportToVault(vault, [blank], { folderMode: "csv_folders" });
   assert.equal(findDuplicateImports(vault, [blank]).size, 1);
 });
+
+
+test("password whitespace stays significant during parsing and duplicate detection", async () => {
+  const vault = await KeePassVault.createNew(new Uint8Array(32).fill(9));
+  const csv = "name,url,username,password,note\nExample,https://example.test,user,secret,n\nExample,https://example.test,user, secret ,n\nExample,https://example.test,user,   ,n";
+  const rows = parseAndPreviewCsv(csv, "chrome").validEntries;
+  assert.deepEqual(rows.map(row => row.password), ["secret", " secret ", "   "]);
+  assert.equal(applyImportToVault(vault, rows, { folderMode: "csv_folders" }).importedCount, 3);
+  assert.equal(applyImportToVault(vault, rows, { folderMode: "csv_folders" }).skippedDuplicates, 3);
+});

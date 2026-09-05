@@ -279,4 +279,5 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   all vault folders and selected CSV rows. Skip duplicates is on by default, with explicit
   opt-out. Preview and apply share the same comparison; apply rechecks current vault contents.
   Skipped-only imports create no folders or save revisions. Changed field values are retained
-  as separate entries; no fuzzy matching, merging, or normalization is performed.
+  as separate entries; comparison performs no fuzzy matching, merging, or normalization.
+  CSV parsing preserves password whitespace, including passwords consisting entirely of spaces.

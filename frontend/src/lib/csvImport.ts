@@ -203,17 +203,20 @@ function mapRowToEntry(
   provider: CsvProvider,
   rowIndex: number
 ): ImportedEntryPreview | null {
-  const getVal = (...keys: string[]): string => {
+  const getField = (keys: string[], trim: boolean): string => {
     for (const key of keys) {
       const normKey = normalizeHeader(key);
       const idx = normalizedHeaders.indexOf(normKey);
       if (idx !== -1 && row[idx] !== undefined) {
-        const val = row[idx].trim();
+        const val = trim ? row[idx].trim() : row[idx];
         if (val) return val;
       }
     }
     return "";
   };
+
+  const getVal = (...keys: string[]) => getField(keys, true);
+  const getPassword = (...keys: string[]) => getField(keys, false);
 
   let title = "";
   let username = "";
@@ -228,7 +231,7 @@ function mapRowToEntry(
       title = getVal("name", "title", "url");
       url = getVal("url");
       username = getVal("username", "user", "login");
-      password = getVal("password", "pass");
+      password = getPassword("password", "pass");
       notes = getVal("note", "notes");
       break;
     }
@@ -237,7 +240,7 @@ function mapRowToEntry(
       title = getVal("title", "name", "url", "website");
       url = getVal("url", "website", "login_url");
       username = getVal("username", "user", "login", "email");
-      password = getVal("password", "pass");
+      password = getPassword("password", "pass");
       notes = getVal("notes", "note", "description");
       totpSeed = getVal("otpauth", "onetimepassword", "otp", "authcode");
       folder = getVal("folder", "section", "vault", "category");
@@ -248,7 +251,7 @@ function mapRowToEntry(
       title = getVal("name", "title");
       url = getVal("loginuri", "login_uri", "uri", "url");
       username = getVal("loginusername", "login_username", "username");
-      password = getVal("loginpassword", "login_password", "password");
+      password = getPassword("loginpassword", "login_password", "password");
       notes = getVal("notes", "note");
       totpSeed = getVal("logintotp", "login_totp", "totp", "otp");
       folder = getVal("folder", "group");
@@ -264,7 +267,7 @@ function mapRowToEntry(
       title = getVal("name", "title");
       url = getVal("url");
       username = getVal("username", "login");
-      password = getVal("password");
+      password = getPassword("password");
       notes = getVal("extra", "note", "notes");
       totpSeed = getVal("totp", "otp");
       folder = getVal("grouping", "group", "folder");
@@ -280,7 +283,7 @@ function mapRowToEntry(
       title = getVal("title", "name");
       url = getVal("url", "website");
       username = getVal("username", "login", "username2", "username3", "email");
-      password = getVal("password");
+      password = getPassword("password");
       notes = getVal("note", "notes");
       totpSeed = getVal("otpsecret", "secondaryotpsecret", "otp");
       folder = getVal("category", "folder", "group");
@@ -292,7 +295,7 @@ function mapRowToEntry(
       title = getVal("title", "name", "sitename", "site", "account", "label", "service", "system");
       url = getVal("url", "website", "uri", "loginuri", "link", "webpage", "host");
       username = getVal("username", "login", "user", "email", "loginusername", "accountname");
-      password = getVal("password", "pass", "loginpassword", "secret", "pwd");
+      password = getPassword("password", "pass", "loginpassword", "secret", "pwd");
       notes = getVal("notes", "note", "extra", "comments", "description", "memo");
       totpSeed = getVal("totp", "logintotp", "otp", "otpauth", "onetimepassword", "otpsecret");
       folder = getVal("folder", "group", "grouping", "category", "section", "collection");
