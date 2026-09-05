@@ -581,15 +581,29 @@ func (s *Store) pruneOldHistoryLocked(userID string) {
 			continue
 		}
 		if info, err := f.Info(); err == nil {
-			snapshots = append(snapshots, info)
+			if info.ModTime().Before(cutoff) {
+				_ = os.Remove(filepath.Join(hDir, info.Name()))
+			} else {
+				snapshots = append(snapshots, info)
+			}
 		}
 	}
 	sort.Slice(snapshots, func(i, j int) bool {
 		return snapshots[i].ModTime().After(snapshots[j].ModTime())
 	})
-	for i, info := range snapshots {
-		if i >= maxHistorySnapshots || info.ModTime().Before(cutoff) {
-			_ = os.Remove(filepath.Join(hDir, info.Name()))
+	// Preserve both endpoints and remove the least separated interior snapshot. A burst
+	// of autosaves then thins the burst instead of erasing the pre-session recovery window.
+	// ponytail: quadratic only when compacting a large legacy history; use time buckets
+	// if initial migrations become slow. Normal writes compact at most 101 snapshots.
+	for len(snapshots) > maxHistorySnapshots {
+		remove := 1
+		gap := snapshots[0].ModTime().Sub(snapshots[2].ModTime())
+		for i := 2; i < len(snapshots)-1; i++ {
+			if span := snapshots[i-1].ModTime().Sub(snapshots[i+1].ModTime()); span < gap {
+				remove, gap = i, span
+			}
 		}
+		_ = os.Remove(filepath.Join(hDir, snapshots[remove].Name()))
+		snapshots = append(snapshots[:remove], snapshots[remove+1:]...)
 	}
 }

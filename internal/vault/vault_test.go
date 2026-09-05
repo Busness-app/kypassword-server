@@ -2,6 +2,7 @@ package vault
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -126,10 +127,13 @@ func TestHistoryCountBoundOnSaveAndRollback(t *testing.T) {
 	if len(history) != limit {
 		t.Fatalf("history count = %d, want %d", len(history), limit)
 	}
+	var oldest, newest bool
 	for _, entry := range history {
-		if entry.Version < 5 {
-			t.Fatalf("old version %d survived count pruning", entry.Version)
-		}
+		oldest = oldest || entry.Version == 1
+		newest = newest || entry.Version == limit+4
+	}
+	if !oldest || !newest {
+		t.Fatal("count pruning must retain the oldest and newest snapshots")
 	}
 	if _, err := store.RestoreHistory("user", history[0].ID); err != nil {
 		t.Fatal(err)
@@ -168,5 +172,55 @@ func TestHistoryAgeRetention(t *testing.T) {
 	history, err = store.ListHistory("user")
 	if err != nil || len(history) != 1 || history[0].Version != 2 {
 		t.Fatalf("recent history = %v, err = %v", history, err)
+	}
+}
+
+func TestHistoryCapPreservesTimeCoverage(t *testing.T) {
+	store, err := NewStore(t.TempDir(), 90)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveVault("user", 0, []byte("encrypted"), "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	for i := 0; i < 150; i++ {
+		path := filepath.Join(store.historyDir("user"), fmt.Sprintf("seed_%03d.kdbx", i))
+		if err := os.WriteFile(path, []byte("old encrypted"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		stamp := now.Add(-time.Duration(i+1) * 60 * 24 * time.Hour / 150)
+		if err := os.Chtimes(path, stamp, stamp); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A burst of writes must not displace the pre-session recovery window.
+	for version := int64(1); version <= 150; version++ {
+		if _, err := store.SaveVault("user", version, []byte("session encrypted"), "", "", ""); err != nil {
+			t.Fatal(err)
+		}
+		history, err := store.ListHistory("user")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(history) > 100 || len(history) == 0 {
+			t.Fatalf("history count = %d", len(history))
+		}
+		if !history[len(history)-1].Timestamp.Before(now.AddDate(0, 0, -30)) {
+			t.Fatalf("write %d erased old history", version)
+		}
+		// Require more than one token old snapshot: maintain coverage in each 15-day band.
+		var bands [4]bool
+		for _, h := range history {
+			band := int(now.Sub(h.Timestamp) / (15 * 24 * time.Hour))
+			if band >= 0 && band < len(bands) {
+				bands[band] = true
+			}
+		}
+		for band, covered := range bands {
+			if !covered {
+				t.Fatalf("write %d erased time band %d", version, band)
+			}
+		}
 	}
 }

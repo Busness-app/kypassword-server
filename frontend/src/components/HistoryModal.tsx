@@ -113,7 +113,7 @@ export function HistoryModal({ onClose, onRestored }: Props) {
 
         {activeTab === "history" ? (
           <p style={{ color: "var(--ink-muted)", fontSize: "0.85rem" }}>
-            Keeps up to 100 snapshots within the server’s retention period (90 days by default). Older snapshots are removed as you save or roll back.
+            Keeps up to 100 snapshots spread across the server’s retention period (90 days by default). Closely spaced snapshots are thinned as you save or roll back.
           </p>
         ) : null}
 
