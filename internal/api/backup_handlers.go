@@ -54,6 +54,9 @@ func (s *Server) handleBackupDrill(w http.ResponseWriter, r *http.Request, u use
 }
 
 func (s *Server) handleExportCapsule(w http.ResponseWriter, r *http.Request, u users.User) {
+	if !s.requireBackupCSRF(w, r) {
+		return
+	}
 	key, err := s.backupState.RecoveryKey()
 	if err != nil {
 		s.writeBackupError(w, err)

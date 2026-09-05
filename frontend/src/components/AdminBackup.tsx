@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useState } from "react";
 import { ArchiveRestore, CheckCircle2, Download, RefreshCw, Send, ShieldCheck } from "lucide-react";
-import { getJSON, postJSON, toErrorMessage } from "../lib/api";
+import { getJSON, postBlob, postJSON, toErrorMessage } from "../lib/api";
 
 type Receipt = {
   capsule_id: string;
@@ -82,6 +82,17 @@ export function AdminBackup() {
     setMessage(result.passed ? "Restore drill passed." : "Restore drill found a problem.");
   });
 
+  const download = () => void act(async () => {
+    const blob = await postBlob("/api/backup/export-capsule");
+    const href = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = href;
+    anchor.download = "kypassword.kycap";
+    anchor.click();
+    URL.revokeObjectURL(href);
+    setMessage("Downloaded sealed capsule.");
+  });
+
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", gap: "1rem", marginBottom: "1.5rem" }}>
@@ -136,7 +147,7 @@ export function AdminBackup() {
         <div style={{ display: "flex", flexWrap: "wrap", gap: "0.75rem" }}>
           <button className="btn btn-primary" type="button" onClick={deposit} disabled={busy || !status?.keyHealthy}><Send size={16} /> Deposit now</button>
           {status?.keyHealthy ? (
-            <a className="btn btn-secondary" href="/api/backup/export-capsule" download><Download size={16} /> Download .kycap</a>
+            <button className="btn btn-secondary" type="button" onClick={download} disabled={busy}><Download size={16} /> Download .kycap</button>
           ) : (
             <button className="btn btn-secondary" type="button" disabled><Download size={16} /> Download .kycap</button>
           )}

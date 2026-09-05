@@ -23,10 +23,11 @@ import (
 )
 
 type Session struct {
-	UserID    string
-	IssuedAt  time.Time
-	ExpiresAt time.Time
-	CSRFToken string
+	UserID          string
+	IssuedAt        time.Time
+	AuthenticatedAt time.Time
+	ExpiresAt       time.Time
+	CSRFToken       string
 }
 
 type Server struct {
@@ -181,7 +182,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/audit", s.withAdmin(s.handleAuditList))
 	mux.HandleFunc("GET /api/audit/verify", s.withAdmin(s.handleAuditVerify))
 	mux.HandleFunc("POST /api/backup/drill", s.withAdmin(s.handleBackupDrill))
-	mux.HandleFunc("GET /api/backup/export-capsule", s.withFreshAdmin(s.handleExportCapsule))
+	mux.HandleFunc("POST /api/backup/export-capsule", s.withFreshAdmin(s.handleExportCapsule))
 	mux.HandleFunc("POST /api/backup/pair-remote", s.withFreshAdmin(s.handlePairRemoteRecovery))
 	mux.HandleFunc("POST /api/backup/deposit", s.withFreshAdmin(s.handleDepositBackup))
 	mux.HandleFunc("GET /api/backup/status", s.withAdmin(s.handleBackupStatus))
@@ -274,10 +275,11 @@ func (s *Server) startSession(w http.ResponseWriter, r *http.Request, userID str
 	now := time.Now().UTC()
 	s.sessMu.Lock()
 	s.sessions[token] = Session{
-		UserID:    userID,
-		IssuedAt:  now,
-		ExpiresAt: now.Add(24 * time.Hour),
-		CSRFToken: csrfToken,
+		UserID:          userID,
+		IssuedAt:        now,
+		AuthenticatedAt: now,
+		ExpiresAt:       now.Add(24 * time.Hour),
+		CSRFToken:       csrfToken,
 	}
 	s.sessMu.Unlock()
 
@@ -392,7 +394,7 @@ const freshSessionWindow = 10 * time.Minute
 func (s *Server) withFreshAdmin(next func(http.ResponseWriter, *http.Request, users.User)) http.HandlerFunc {
 	return s.withAdmin(func(w http.ResponseWriter, r *http.Request, u users.User) {
 		sess, _ := s.currentSession(r)
-		if time.Since(sess.IssuedAt) > freshSessionWindow {
+		if sess.AuthenticatedAt.IsZero() || time.Since(sess.AuthenticatedAt) > freshSessionWindow {
 			http.Error(w, "re-authenticate to continue: sign in again through KySignOn", http.StatusForbidden)
 			return
 		}

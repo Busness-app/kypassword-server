@@ -61,8 +61,7 @@ func TestBackupRoutesRequireAdminAndCSRF(t *testing.T) {
 func TestPairStatusRedactsTokenAndUnpairedExportFailsClosed(t *testing.T) {
 	srv := newTestServer(t)
 	_, adminCookie := signedInUser(t, srv, "admin", users.RoleAdmin)
-	export := httptest.NewRequest(http.MethodGet, "/api/backup/export-capsule", nil)
-	export.AddCookie(adminCookie)
+	export := csrfRequest(t, srv, adminCookie, http.MethodPost, "/api/backup/export-capsule", `{}`)
 	exportRec := httptest.NewRecorder()
 	srv.Routes().ServeHTTP(exportRec, export)
 	if exportRec.Code != http.StatusPreconditionFailed {
@@ -91,5 +90,17 @@ func TestPairStatusRedactsTokenAndUnpairedExportFailsClosed(t *testing.T) {
 	srv.Routes().ServeHTTP(statusRec, status)
 	if statusRec.Code != http.StatusOK || bytes.Contains(statusRec.Body.Bytes(), []byte("never-return-this-token")) || !bytes.Contains(statusRec.Body.Bytes(), []byte(`"keyHealthy":true`)) {
 		t.Fatalf("unsafe or unhealthy status: %d %s", statusRec.Code, statusRec.Body.String())
+	}
+}
+
+func TestExportCapsuleRequiresCSRF(t *testing.T) {
+	srv := newTestServer(t)
+	_, adminCookie := signedInUser(t, srv, "admin", users.RoleAdmin)
+	request := httptest.NewRequest(http.MethodPost, "/api/backup/export-capsule", nil)
+	request.AddCookie(adminCookie)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, request)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("export without CSRF = %d, want 403", rec.Code)
 	}
 }
