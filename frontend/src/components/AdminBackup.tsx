@@ -97,7 +97,12 @@ export function AdminBackup() {
       </div>
 
       {message ? <div className="field-card" style={{ color: "var(--success)", marginBottom: "1rem" }}><CheckCircle2 size={16} /> {message}</div> : null}
-      {error ? <div className="field-card" style={{ color: "var(--danger)", marginBottom: "1rem" }}>{error}</div> : null}
+      {error ? (
+        <div className="field-card" style={{ color: "var(--danger)", marginBottom: "1rem" }}>
+          {error}
+          {error.startsWith("re-authenticate") ? <> <a href="/api/auth/oidc/login">Sign in again</a></> : null}
+        </div>
+      ) : null}
 
       <div className="field-card" style={{ marginBottom: "1rem" }}>
         <h4 style={{ marginTop: 0 }}>Pairing status</h4>
