@@ -43,6 +43,20 @@ Reference implementation: `kysignon-server` master (`internal/backup`, `internal
   (`TestDecryptGuard`); it moves to the lib's `guardtest` in Phase B.
 - No step-up in KyPassword (SSO-only, no server-side password). Row 10 uses a
   fresh-session check instead; see Task 3.
+- **Phase A is done** (branch `feat/backup-phase-a`, PR #24, 2026-09-05): rows 8, 10, 12, 13.
+  Only `KYPASSWORD_BACKUP_DEPOSIT_INTERVAL` is passed through compose; the Phase B env vars
+  are added by Task 6 when they exist. Two findings from the runbook proof:
+  - Fixed in Phase A: `audit.Snapshot` on a never-used instance (anchor count 0, empty hash)
+    failed verification, so export, drill and deposit all failed before the first audit event.
+  - **For Task 7:** `StateStore.CapsuleFiles` requires `recovery-token.key`, which only
+    exists after a pairing. A key pinned by hand with no pairing cannot export. The lib's
+    `Run` has no such requirement; make sure the new collector does not either.
+  - **For Task 7:** the capsule `ServiceName` is the lowercase `"kypassword"` and `AppName`
+    is `"KyPassword"`. `recoveryclient.Run` refuses a payload whose ServiceName differs from
+    `RunConfig.AppName`, and `ClaimPairing` sends `serviceName` for KyRecovery to pin.
+    Capsules in the wild (PR #22 deposits) say `kypassword`; keep that string for both, and
+    make `Restore`'s `expectService` the same, or every existing deposit becomes unrestorable
+    through the new CLI.
 
 ## Global Constraints
 
@@ -64,7 +78,7 @@ Reference implementation: `kysignon-server` master (`internal/backup`, `internal
 
 ## Phase A: product rows that need no lib (do now)
 
-### Task 1: Compose DNS override and backup env passthrough (row 8)
+### Task 1: Compose DNS override and backup env passthrough (row 8) — DONE (PR #24)
 
 **Files:**
 - Create: `docker-compose.lan-dns.yml`
@@ -104,7 +118,7 @@ docker compose -f docker-compose.yml -f docker-compose.lan-dns.yml config 2>&1 |
 
 - [ ] **Step 4: Commit** `chore(compose): lan-dns override and backup env passthrough`
 
-### Task 2: Restore runbook (row 12)
+### Task 2: Restore runbook (row 12) — DONE (PR #24)
 
 **Files:**
 - Create: `docs/RESTORE.md`
@@ -131,7 +145,7 @@ docker compose -f docker-compose.yml -f docker-compose.lan-dns.yml config 2>&1 |
   message printed matches what the runbook says.
 - [ ] **Step 3: Commit** `docs: restore runbook proven against a scratch capsule`
 
-### Task 3: Fresh-session gate on destructive backup routes (row 10)
+### Task 3: Fresh-session gate on destructive backup routes (row 10) — DONE (PR #24)
 
 KyPassword has no step-up. Its equivalent: the admin's session must have been issued within
 the last 10 minutes, otherwise `403 {"error":"re-authenticate to continue"}` and the UI sends
@@ -154,7 +168,7 @@ is a real OIDC `prompt=login` step-up, which is a larger change.
   stale-session 403 so a future route cannot be added without the gate.
 - [ ] **Step 5: Commit** `api: fresh-session gate on destructive backup routes`
 
-### Task 4: README and package AGENTS.md (row 13, part 1)
+### Task 4: README and package AGENTS.md (row 13, part 1) — DONE (PR #24)
 
 **Files:**
 - Modify: `README.md` "KyRecovery backups" and env table; `internal/backup/AGENTS.md`
