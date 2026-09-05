@@ -66,7 +66,7 @@ Reference implementation: `kysignon-server` master (`internal/backup`, `internal
 - KyRecovery URLs: HTTPS only, no redirects, no query or fragment, public addresses only
   unless `KYPASSWORD_BACKUP_ALLOW_PRIVATE_RECOVERY=true` (private + CGNAT admitted; loopback,
   link-local, multicast, unspecified, reserved never).
-- Local copies are named `KyPassword.<capsule-id>.kycap` (the lib escapes the app name and
+- Local copies are named `kypassword.<capsule-id>.kycap` (the lib uses the service-bound app name and
   prunes only its own prefix). Local write failure never cancels a deposit.
 - Interval bounded in whole seconds before any `time.Duration` math: 0, or [900, 31622400].
 - Every external string through `AuditSafe` (printable, 200 chars) before audit or error.
@@ -147,25 +147,29 @@ docker compose -f docker-compose.yml -f docker-compose.lan-dns.yml config 2>&1 |
 
 ### Task 3: Fresh-session gate on destructive backup routes (row 10) — DONE (PR #24)
 
-KyPassword has no step-up. Its equivalent: the admin's session must have been issued within
-the last 10 minutes, otherwise `403 {"error":"re-authenticate to continue"}` and the UI sends
-the admin back through KySignOn. This is an assumption to confirm with Yoshi; the alternative
-is a real OIDC `prompt=login` step-up, which is a larger change.
+KyPassword has no step-up. Its equivalent: the admin's session must record an interactive
+KySignOn authentication within the last 10 minutes, otherwise `403 {"error":"re-authenticate to continue"}`
+and the UI sends the admin back through KySignOn. Track this separately from session issuance:
+device redemption and token refresh must never renew the freshness input. A future true step-up
+can add OIDC `prompt=login` while preserving the same `AuthenticatedAt` contract.
 
 **Files:**
 - Modify: `internal/api/server.go` (`withAdmin` neighbour `withFreshAdmin`), route table
 - Test: `internal/api/backup_handlers_test.go`
 
-- [ ] **Step 1: Failing test**: a session with `IssuedAt` 11 minutes ago gets 403 on
-  `POST /api/backup/deposit`; one issued 1 minute ago gets past the gate (assert not 403).
+- [ ] **Step 1: Failing tests**: a session with `AuthenticatedAt` 11 minutes ago gets 403 on
+  `POST /api/backup/deposit`; one authenticated 1 minute ago gets past the gate (assert not 403).
+  Starting with the stale admin session, walk device pairing start and redeem, then prove the
+  returned bearer still gets 403 because device sessions have a zero `AuthenticatedAt`.
 - [ ] **Step 2: Implement** `withFreshAdmin` wrapping `withAdmin` with
-  `time.Since(sess.IssuedAt) <= 10*time.Minute`; `currentUser` must return the `Session`
-  or a sibling `currentSession` added next to it.
+  a non-zero `sess.AuthenticatedAt` no older than 10 minutes; set it only in the completed OIDC
+  callback path and leave it zero in `startSessionWithToken`. `currentUser` must return the
+  `Session` or a sibling `currentSession` added next to it.
 - [ ] **Step 3: Apply** to `deposit`, `export-capsule`, `pair-remote`, and in Phase B to
   `pin-key`, `unpair`, `schedule`. `status` and `drill` stay `withAdmin`.
 - [ ] **Step 4: Hardening test**: extend `retired_routes_test.go` or a new
   `backup_hardening_test.go` with a table of every destructive backup route asserting the
-  stale-session 403 so a future route cannot be added without the gate.
+  stale-session 403 and missing-CSRF 403 so a future route cannot be added without both gates.
 - [ ] **Step 5: Commit** `api: fresh-session gate on destructive backup routes`
 
 ### Task 4: README and package AGENTS.md (row 13, part 1) — DONE (PR #24)
@@ -284,9 +288,11 @@ Settings keys the lib reads and writes (the adapter must persist exactly these n
 **Files:**
 - Delete: `internal/backup/client.go`, most of `state.go`, `Service` and `Seal` in
   `backup.go`, `Restore`/`ParseShares` in `drill.go`
-- Keep: `Collector.Collect` (returns `recoveryclient.Payload` with `ServiceName: "KyPassword"`,
+- Keep: `Collector.Collect` (returns `recoveryclient.Payload` with `ServiceName: "kypassword"`,
   which must equal `RunConfig.AppName` or `Run` refuses), the drill checks in `drill.go` (KDBX
   checksum, audit chain verify, users/devices JSON parse) as `func checks(dir string) []recoveryclient.Check`
+- Build `RunConfig` with `AppName: "kypassword"`; this field is the service binding, not the
+  display label. Keep `"KyPassword"` only as `ClaimPairing`'s separate human-readable app name.
 - Modify: `internal/api/backup_handlers.go`, `internal/api/server.go`, `cmd/server/backup.go`,
   `cmd/server/main.go` (loop)
 - Sealer: `recoveryclient.NewAESGCMSealer(<existing token key from tokenKeyFile>, "kypassword:setting:kyrecovery_token")`.
@@ -298,7 +304,7 @@ Settings keys the lib reads and writes (the adapter must persist exactly these n
   fixture that fails to open must surface as an error on the status route, never as unpaired.
 - Routes (all under `withFreshAdmin` from Task 3 except status/drill):
   - `POST /api/backup/pair-remote` → `ValidateURL(url, allowPrivate)` →
-    `ClaimPairing(ctx, url, code, "KyPassword", "KyPassword")` returns `PairingResult{APIToken, Key}`
+    `ClaimPairing(ctx, url, code, "kypassword", "KyPassword")` returns `PairingResult{APIToken, Key}`
     → `StoreRecoveryKey(configDir, settings, res.Key)` → `StorePairing(settings, sealer, url, res.APIToken)`;
     audit row carries `allow_private=<bool>`.
   - `POST /api/backup/pin-key` `{publicKey, threshold, totalShares}` → `ParsePinRequest` →
@@ -310,10 +316,10 @@ Settings keys the lib reads and writes (the adapter must persist exactly these n
   - `POST /api/backup/deposit` → `Run`; `ErrNoDestination` → 412 with a message the screen
     shows; `ErrInProgress` → 409.
   - `GET /api/backup/status` → key (id, k-of-n, healthy via `LoadRecoveryKey`), pairing
-    (`HasPairing`, url), `LastDeposit`, `ListLocalCopies(dir, "KyPassword")`, `Interval`,
+    (`HasPairing`, url), `LastDeposit`, `ListLocalCopies(dir, "kypassword")`, `Interval`,
     `NextRun`, `backupDir` set or not, `allowPrivate`. The drill no longer reports pin status;
     this route does.
-  - `GET /api/backup/export-capsule` → `Seal(payload, key)`;
+  - `POST /api/backup/export-capsule` → require CSRF, then `Seal(payload, key)`;
     `POST /api/backup/drill` → `Drill(ctx, filepath.Join(dataDir, "drill"), payload, checks)`
     (scratch root must be inside the data dir, `ErrNoScratchRoot` otherwise).
 - Loop in `cmd/server/main.go`: tick every minute, `NextRun`, skip `ErrNotPaired` and
@@ -321,15 +327,18 @@ Settings keys the lib reads and writes (the adapter must persist exactly these n
   code; the env value becomes the `Interval` default.
 - CLI `cmd/server/backup.go`: `backup-drill`, `export-capsule`, `deposit` → `Run`,
   `restore --capsule --to` → `shares, err := recoveryclient.ReadShares(os.Stdin)` then
-  `recoveryclient.Restore(capsulePath, target, "KyPassword", shares, os.Stdout)`. Drop the
+  `recoveryclient.Restore(capsulePath, target, "kypassword", shares, os.Stdout)`. Drop the
   local manifest peek: `Restore` checks the service name before `Combine` and prints the
   authenticated manifest itself.
+- Every non-GET backup handler starts with `if !s.requireBackupCSRF(w, r) { return }`; the
+  route hardening table drives each with a fresh admin cookie but no CSRF header and expects 403.
 - Decrypt guard: replace `TestDecryptGuard` with one test calling
   `guardtest.NoDecryptOutside(t, <abs repo root>, map[string][]string{})`. The lib also
   forbids `recoveryclient.Restore` outside an allowed func, so the allow map becomes
   `{"cmd/server/backup.go": {"runRestore"}}` (whatever the CLI function is named). The repo
-  has far more than `guardtest.MinFiles` (10) Go files. Prove the guard bites once by planting
-  `capsule.Open` in a handler and watching the test fail, then remove it.
+  has far more than `guardtest.MinFiles` (10) Go files. Permanently prove the guard bites against
+  a test-created fixture tree containing the forbidden call and at least `guardtest.MinFiles`
+  Go files; assert the fixture check reports failure. Never plant decrypt code in a production file.
 - [ ] Per route: failing handler test → implement → pass → commit. Suggested commits:
   `backup: pairing, pin and sealed token from kyrecovery`, `backup: Run with local copies
   and schedule setting`, `backup: drill and restore from kyrecovery`, `api: pin-key,
@@ -364,7 +373,7 @@ Settings keys the lib reads and writes (the adapter must persist exactly these n
 
 - [ ] `go test -race ./...`, `cd frontend && npm test && npm run build`, `govulncheck ./...`.
 - [ ] Screen live: throwaway `DATA_DIR`/`CONFIG_DIR`, `KYPASSWORD_BACKUP_DIR` set, log in via
-  KySignOn, pin a freshly split key by hand, Back up now, confirm `KyPassword.<id>.kycap` at
+  KySignOn, pin a freshly split key by hand, Back up now, confirm `kypassword.<id>.kycap` at
   0600 in the dir, audit rows for pin and run, `ls` shows no other file touched.
 - [ ] Live pairing in Yoshi's homelab: `KYPASSWORD_BACKUP_ALLOW_PRIVATE_RECOVERY=true`,
   `KYPASSWORD_DNS=192.168.1.1 docker compose -f docker-compose.yml -f docker-compose.lan-dns.yml up -d`,
