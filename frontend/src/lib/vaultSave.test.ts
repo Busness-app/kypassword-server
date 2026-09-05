@@ -184,3 +184,24 @@ test("discard aborts a stalled upload and never sends queued revisions or publis
   assert.equal(fetch.mock.callCount(), 1);
   assert.equal(queue.getSnapshot().version, 1);
 });
+
+test("a checkpoint queued before locking finishes encrypted, but a locked queue cannot export or upload", async (t) => {
+  const key = new Uint8Array(32).fill(9);
+  const vault = await KeePassVault.createNew(key);
+  vault.createEntry({ title: "recover me", username: "", password: "unsaved", url: "", notes: "", groupUuid: "" });
+  const queue = new VaultSaveQueue(vault, 8);
+  const fetch = t.mock.method(globalThis, "fetch", async () => { throw new Error("must not upload"); });
+  queue.changed();
+  const binary = queue.exportBinary();
+  queue.discard();
+  const recovered = await KeePassVault.open(await binary, key);
+  assert.equal(recovered.getEntries()[0].password, "unsaved");
+  await assert.rejects(queue.exportBinary(), /locked/);
+  await queue.save();
+  assert.equal(fetch.mock.callCount(), 0);
+  const restored = new VaultSaveQueue(recovered, 8);
+  restored.recoverUnsaved();
+  assert.equal(restored.getSnapshot().kind, "error");
+  assert.equal(restored.getSnapshot().version, 8);
+  restored.discard();
+});

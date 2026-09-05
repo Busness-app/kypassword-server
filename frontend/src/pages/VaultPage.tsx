@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import { KeePassVault, VaultEntry, VaultGroup } from "../lib/kdbx";
+import type { EntryDraft } from "../lib/lockedDraft";
 import type { SaveState } from "../lib/vaultSave";
 import { generateTOTP } from "../lib/totp";
 import { PasswordGenerator } from "../components/PasswordGenerator";
@@ -33,18 +34,20 @@ type Props = {
   vaultVersion: number;
   saveState: SaveState;
   onChanged: () => void;
-  onDraftChange: (dirty: boolean) => void;
+  onDraftChange: (draft: EntryDraft | null) => void;
+  initialDraft?: EntryDraft | null;
   hidden: boolean;
   onSave: () => Promise<void>;
   onExport: () => void;
   onReload: () => Promise<void>;
 };
 
-export function VaultPage({ vault, vaultVersion, onSave, onExport, onReload, saveState, onChanged, onDraftChange, hidden }: Props) {
+export function VaultPage({ vault, vaultVersion, onSave, onExport, onReload, saveState, onChanged, onDraftChange, hidden, initialDraft }: Props) {
   const [groups, setGroups] = useState<VaultGroup[]>([]);
   const [selectedGroupUuid, setSelectedGroupUuid] = useState<string>("all");
   const [entries, setEntries] = useState<VaultEntry[]>([]);
-  const [selectedEntryUuid, setSelectedEntryUuid] = useState<string | null>(null);
+  const [selectedEntryUuid, setSelectedEntryUuid] = useState<string | null>(initialDraft?.uuid ?? null);
+  const pendingDraft = useRef(initialDraft);
   const [searchQuery, setSearchQuery] = useState("");
 
   // Editor State
@@ -95,12 +98,23 @@ export function VaultPage({ vault, vaultVersion, onSave, onExport, onReload, sav
     editNotes !== selectedEntry.notes || editTotp !== (selectedEntry.totpSeed || "") ||
     editGroupUuid !== selectedEntry.groupUuid
   );
-  useEffect(() => { onDraftChange(draftDirty); }, [draftDirty, onDraftChange]);
+  useEffect(() => { onDraftChange(draftDirty && selectedEntryUuid ? {
+    uuid: selectedEntryUuid, title: editTitle, username: editUsername, password: editPassword,
+    url: editUrl, notes: editNotes, totpSeed: editTotp, groupUuid: editGroupUuid,
+  } : null); }, [draftDirty, selectedEntryUuid, editTitle, editUsername, editPassword, editUrl, editNotes, editTotp, editGroupUuid, onDraftChange]);
   const canChangeEntry = () => !draftDirty || confirm("Discard unapplied entry edits?");
 
   // Load selected entry into editor
   const loadEditor = () => {
     if (selectedEntry) {
+      const recovered = pendingDraft.current;
+      if (recovered?.uuid === selectedEntry.uuid) {
+        pendingDraft.current = null;
+        setEditTitle(recovered.title); setEditUsername(recovered.username); setEditPassword(recovered.password);
+        setEditUrl(recovered.url); setEditNotes(recovered.notes); setEditTotp(recovered.totpSeed);
+        setEditGroupUuid(recovered.groupUuid); setIsEditing(true); setRevealPassword(false);
+        return;
+      }
       setEditTitle(selectedEntry.title);
       setEditUsername(selectedEntry.username);
       setEditPassword(selectedEntry.password);
