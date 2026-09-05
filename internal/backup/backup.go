@@ -137,7 +137,9 @@ func (s *Service) Run(ctx context.Context) (recoveryclient.Result, error) {
 		return recoveryclient.Result{}, ErrDepositInProgress
 	}
 	defer s.mu.Unlock()
-	s.State.operationMu.Lock()
+	if !s.State.operationMu.TryLock() {
+		return recoveryclient.Result{}, ErrDepositInProgress
+	}
 	defer s.State.operationMu.Unlock()
 	// Stamp even degraded attempts so the scheduler does not retry every tick.
 	if _, err := s.State.RecoveryKey(); err != nil && !errors.Is(err, ErrNotPaired) {
@@ -169,7 +171,11 @@ func (s *Service) saveRun(r recoveryclient.Result, runErr error) error {
 }
 func (s *Service) Wait() { s.mu.Lock(); s.mu.Unlock() }
 func Outcome(r recoveryclient.Result, err error) (string, string) {
-	action, outcome, details := recoveryclient.Outcome(r, err)
+	_, outcome, details := recoveryclient.Outcome(r, err)
+	action := "backup.deposited"
+	if err != nil || r.LocalError != "" {
+		action = "backup.deposit_failed"
+	}
 	details["outcome"] = outcome
 	b, _ := json.Marshal(details)
 	return action, string(b)

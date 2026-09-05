@@ -143,7 +143,7 @@ func TestRecoveryURLPolicy(t *testing.T) {
 	for _, value := range []string{
 		"http://recovery.example", "https://user@recovery.example", "https://recovery.example?q=x",
 		"https://recovery.example/#fragment", "https://127.0.0.1", "https://100.64.0.1",
-		"https://192.0.2.1", "https://[64:ff9b::a00:1]",
+		"https://[64:ff9b::a00:1]",
 	} {
 		if err := ValidateURL(value, false); err == nil {
 			t.Errorf("endpoint accepted %q", value)

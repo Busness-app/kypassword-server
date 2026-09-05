@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Busness-app/ky-primitives/recoveryclient"
@@ -14,6 +15,30 @@ func ConfigFromEnv() (Config, error) {
 	c := Config{Directory: os.Getenv("KYPASSWORD_BACKUP_DIR"), Keep: 7, Interval: 24 * time.Hour}
 	if c.Directory != "" && !filepath.IsAbs(c.Directory) {
 		return c, fmt.Errorf("KYPASSWORD_BACKUP_DIR must be absolute")
+	}
+	if c.Directory != "" {
+		data := os.Getenv("DATA_DIR")
+		if data == "" {
+			data = "./data"
+		}
+		config := os.Getenv("CONFIG_DIR")
+		if config == "" {
+			config = "./config"
+		}
+		dir, err := resolvedPath(c.Directory)
+		if err != nil {
+			return c, fmt.Errorf("KYPASSWORD_BACKUP_DIR: %w", err)
+		}
+		for _, root := range []string{config, filepath.Join(data, "vaults"), filepath.Join(data, "audit"), filepath.Join(data, "drill")} {
+			root, err = resolvedPath(root)
+			if err != nil {
+				return c, fmt.Errorf("KYPASSWORD_BACKUP_DIR: %w", err)
+			}
+			if containsPath(root, dir) || containsPath(dir, root) {
+				return c, fmt.Errorf("KYPASSWORD_BACKUP_DIR overlaps protected directory %s", root)
+			}
+		}
+		c.Directory = dir
 	}
 	if v := os.Getenv("KYPASSWORD_BACKUP_KEEP"); v != "" {
 		n, e := strconv.Atoi(v)
@@ -83,4 +108,28 @@ func (s *Service) Status() (FullStatus, error) {
 	out.LastAttempt = st.LastAttempt
 	out.LastRun = st.LastRun
 	return out, err
+}
+
+// Resolve existing ancestors too: the backup directory may not exist until the first run.
+func resolvedPath(path string) (string, error) {
+	path, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err == nil {
+		return resolved, nil
+	}
+	if !os.IsNotExist(err) {
+		return "", err
+	}
+	parent, err := resolvedPath(filepath.Dir(path))
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(parent, filepath.Base(path)), nil
+}
+func containsPath(parent, child string) bool {
+	rel, err := filepath.Rel(parent, child)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }

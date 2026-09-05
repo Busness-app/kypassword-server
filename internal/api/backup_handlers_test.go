@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Busness-app/ky-primitives/recoverykey"
 	"github.com/Busness-app/kypassword-server/internal/backup"
@@ -153,5 +154,70 @@ func TestPinScheduleAndLocalBackupRoutes(t *testing.T) {
 	}
 	if w := call("POST", "/api/backup/deposit", `{}`); w.Code != 200 || !bytes.Contains(w.Body.Bytes(), []byte("local_path")) {
 		t.Fatalf("local backup: %d %s", w.Code, w.Body.String())
+	}
+}
+
+type blockedRecovery struct{ started, release chan struct{} }
+
+func (f *blockedRecovery) Deposit(ctx context.Context, _, _ string, _ []byte) (backup.Receipt, error) {
+	close(f.started)
+	select {
+	case <-f.release:
+	case <-ctx.Done():
+	}
+	return backup.Receipt{}, backup.ErrRemote
+}
+func TestPartialBackupAndBusyUnpair(t *testing.T) {
+	srv := newTestServer(t)
+	_, admin := signedInUser(t, srv, "admin", users.RoleAdmin)
+	key, err := recoverykey.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.backupState.StorePairing("https://recovery.example", "synthetic", backup.RecoveryKey{Public: key.Public(), Threshold: 2, TotalShares: 3}); err != nil {
+		t.Fatal(err)
+	}
+	srv.backupService.Config.Directory = t.TempDir()
+	srv.backupService.Config.Keep = 2
+	fake := &blockedRecovery{make(chan struct{}), make(chan struct{})}
+	srv.backupService.Client = fake
+	deposit := httptest.NewRecorder()
+	req := csrfRequest(t, srv, admin, "POST", "/api/backup/deposit", `{}`)
+	done := make(chan struct{})
+	go func() { defer close(done); srv.Routes().ServeHTTP(deposit, req) }()
+	var unpaired chan struct{}
+	defer func() {
+		close(fake.release)
+		<-done
+		if unpaired != nil {
+			<-unpaired
+		}
+	}()
+	select {
+	case <-fake.started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("deposit did not start")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	unpair := httptest.NewRecorder()
+	unpaired = make(chan struct{})
+	go func() {
+		defer close(unpaired)
+		srv.Routes().ServeHTTP(unpair, csrfRequest(t, srv, admin, "DELETE", "/api/backup/pairing", `{}`).WithContext(ctx))
+	}()
+	select {
+	case <-unpaired:
+	case <-ctx.Done():
+		t.Fatal("unpair blocked behind deposit")
+	}
+	if unpair.Code != http.StatusConflict {
+		t.Fatalf("unpair: %d %s", unpair.Code, unpair.Body.String())
+	}
+	// Release without closing so the deferred cleanup can close it once.
+	fake.release <- struct{}{}
+	<-done
+	if deposit.Code != http.StatusMultiStatus || !bytes.Contains(deposit.Body.Bytes(), []byte("local_path")) || !bytes.Contains(deposit.Body.Bytes(), []byte("warning")) {
+		t.Fatalf("partial: %d %s", deposit.Code, deposit.Body.String())
 	}
 }

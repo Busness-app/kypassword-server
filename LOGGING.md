@@ -18,7 +18,11 @@ contents, decrypted entries, recovery secrets, session tokens, or raw request
 bodies. Audit records must remain content-blind.
 
 KyRecovery actions are `backup.paired`, `backup.pair_failed`, `backup.deposited`,
-`backup.deposit_failed`, `backup.exported`, and `backup.drill`. Records may contain a
+`backup.deposit_failed`, `backup.exported`, `backup.drill`, `backup.pinned`,
+`backup.pin_failed`, `backup.unpaired`, `backup.unpair_failed`, `backup.schedule`,
+and `backup.schedule_failed`. Scheduled runs also emit the deposit action and bounded
+details to stderr. Deposit details are a JSON object with the library outcome plus
+optional capsule/destination/error fields; any failed destination uses `backup.deposit_failed`. Records may contain a
 bounded capsule ID, public key ID, digest, or sanitized failure. They never contain the
 deposit token, sealed token, capsule bytes, custodian shares, or member contents.
 

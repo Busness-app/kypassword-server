@@ -221,3 +221,6 @@ JWKS, including a nonce tied to single-use server-side login state. In-flight lo
 older server or changed SSO configuration must start again. Userinfo can no longer substitute
 for a missing or invalid ID token. Verify real SSO login and a signed directory update after
 deployment; local TLS issuer tests are separate from that live proof.
+
+Local backup directories must not overlap `CONFIG_DIR` or `DATA_DIR/vaults`,
+`DATA_DIR/audit`, or `DATA_DIR/drill` (including symlink aliases). Startup rejects overlaps.
