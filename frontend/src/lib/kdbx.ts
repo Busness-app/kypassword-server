@@ -2,7 +2,7 @@ import * as kdbxweb from "kdbxweb";
 import { bytesToHex } from "./vaultCrypto";
 import { argon2d, argon2i, argon2id } from "hash-wasm";
 // kdbxweb's UMD bundle defeats Node's CJS export lexer; classes arrive under `default`.
-const { CryptoEngine, Credentials, ProtectedValue, Kdbx, Consts, VarDictionary, Int64 } =
+const { CryptoEngine, Credentials, ProtectedValue, Kdbx, KdbxError, Consts, VarDictionary, Int64 } =
   (kdbxweb as { default?: typeof kdbxweb }).default ?? kdbxweb;
 
 // KyAuth's KDBX vaults are Argon2d, so opening or writing one needs an Argon2 engine.
@@ -108,16 +108,19 @@ export class KeePassVault {
     return new KeePassVault(db, cred);
   }
 
-  // Open an existing encrypted KDBX v4 binary with the random vaultKey.
-  //
-  // One credential form, deliberately. An earlier build keyed vaults on the raw bytes and
-  // fell back to the hexadecimal form, but a failed attempt is not free: it runs the full
-  // KDF before reporting the wrong key, so with Argon2d at 32 MiB every unlock would pay
-  // an extra derivation. Both clients write hexadecimal now, so there is nothing to fall
-  // back to.
+  // Older web clients wrote binary-key credentials. Read those after a hex-key mismatch,
+  // then use the portable hex credential on the next explicit save/export.
   public static async open(buffer: ArrayBuffer, vaultKey: Uint8Array): Promise<KeePassVault> {
     const cred = KeePassVault.credentialFor(vaultKey);
-    return new KeePassVault(await Kdbx.load(buffer, cred), cred);
+    try {
+      return new KeePassVault(await Kdbx.load(buffer, cred), cred);
+    } catch (err) {
+      if (!(err instanceof KdbxError) || err.code !== Consts.ErrorCodes.InvalidKey) throw err;
+      const legacy = new Credentials(ProtectedValue.fromBinary(vaultKey.slice().buffer));
+      const db = await Kdbx.load(buffer, legacy);
+      db.credentials = cred;
+      return new KeePassVault(db, cred);
+    }
   }
 
   // Export/Save the vault back into encrypted KDBX v4 ArrayBuffer

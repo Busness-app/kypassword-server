@@ -29,6 +29,29 @@ const numberOf = (kdf: kdbxweb.VarDictionary, name: string) => {
 // kdbxweb's @xmldom/xmldom fallback. The CSV tests never call exportBinary/open,
 // so that path is uncovered without this file.
 describe("KDBX vault round-trip", () => {
+  test("opens legacy binary-key vaults and exports them with the portable hex credential", async () => {
+    const key = vaultKey();
+    const legacy = Kdbx.create(new Credentials(ProtectedValue.fromBinary(key.slice().buffer)), "Legacy Vault");
+    legacy.header.setKdf(Consts.KdfId.Aes);
+    const entry = legacy.createEntry(legacy.getDefaultGroup());
+    entry.fields.set("Title", "Existing login");
+    entry.fields.set("Password", ProtectedValue.fromString("keep this password"));
+    const original = await legacy.save();
+    const originalCopy = original.slice(0);
+
+    const wrong = key.slice();
+    wrong[0] ^= 0xff;
+    await assert.rejects(() => KeePassVault.open(original, wrong),
+      (err: unknown) => err instanceof kdbxweb.KdbxError && err.code === Consts.ErrorCodes.InvalidKey);
+
+    const opened = await KeePassVault.open(original, key);
+    assert.equal(opened.getEntries()[0].password, "keep this password");
+    const exported = await Kdbx.load(await opened.exportBinary(),
+      new Credentials(ProtectedValue.fromString(bytesToHex(key))));
+    assert.equal(exported.getDefaultGroup().entries[0].fields.get("Title"), "Existing login");
+    assert.deepEqual(original, originalCopy, "opening/exporting must not mutate the source snapshot");
+  });
+
   test("export and reopen preserves entries, unicode and XML metacharacters", async () => {
     const key = vaultKey();
     const vault = await KeePassVault.createNew(key, "RoundTrip Vault");
