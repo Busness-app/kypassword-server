@@ -16,6 +16,8 @@ import (
 	"time"
 )
 
+const maxHistorySnapshots = 100
+
 var (
 	ErrNotFound = errors.New("vault not found")
 	ErrConflict = errors.New("vault version conflict: a newer version exists on the server")
@@ -411,9 +413,7 @@ func (s *Store) SaveVault(userID string, expectedVersion int64, kdbxData []byte,
 		return Metadata{}, err
 	}
 
-	// Trigger async retention pruning
-	go s.pruneOldHistory(userID)
-
+	s.pruneOldHistoryLocked(userID)
 	return nextMeta, nil
 }
 
@@ -514,6 +514,7 @@ func (s *Store) RestoreHistory(userID, historyID string) (Metadata, error) {
 		return Metadata{}, err
 	}
 
+	s.pruneOldHistoryLocked(userID)
 	return nextMeta, nil
 }
 
@@ -564,10 +565,8 @@ func (s *Store) DiscardConflict(userID, conflictID string) error {
 	return os.Remove(conflictFile)
 }
 
-func (s *Store) pruneOldHistory(userID string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
+// Caller holds s.mu; bound history before the next writer can archive another copy.
+func (s *Store) pruneOldHistoryLocked(userID string) {
 	cutoff := time.Now().AddDate(0, 0, -s.retentionDays)
 	hDir := s.historyDir(userID)
 
@@ -576,11 +575,21 @@ func (s *Store) pruneOldHistory(userID string) {
 		return
 	}
 
+	var snapshots []os.FileInfo
 	for _, f := range files {
+		if f.IsDir() || !strings.HasSuffix(f.Name(), ".kdbx") {
+			continue
+		}
 		if info, err := f.Info(); err == nil {
-			if info.ModTime().Before(cutoff) {
-				_ = os.Remove(filepath.Join(hDir, f.Name()))
-			}
+			snapshots = append(snapshots, info)
+		}
+	}
+	sort.Slice(snapshots, func(i, j int) bool {
+		return snapshots[i].ModTime().After(snapshots[j].ModTime())
+	})
+	for i, info := range snapshots {
+		if i >= maxHistorySnapshots || info.ModTime().Before(cutoff) {
+			_ = os.Remove(filepath.Join(hDir, info.Name()))
 		}
 	}
 }

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useSyncExternalStore } from "react";
 import { getJSON, postJSON, putJSON, toErrorMessage } from "./lib/api";
-import { VaultSaveQueue, uploadVault, type SaveState } from "./lib/vaultSave";
+import { VaultSaveQueue, uploadVault, canDiscardVault, type SaveState } from "./lib/vaultSave";
 import { KeePassVault } from "./lib/kdbx";
 import {
   generateVaultMasterKey,
@@ -60,14 +60,11 @@ export function App() {
     return () => window.removeEventListener("beforeunload", warn);
   }, [unsaved]);
 
-  const canDiscardVault = () => {
-    if (saveState.kind === "saving") {
-      alert("Please wait for the vault to finish saving.");
-      return false;
-    }
-    return !unsaved || confirm("Discard unsaved edits? Download a copy first if you need to keep applied changes.");
-  };
+  const confirmDiscardVault = () => canDiscardVault(saveState, hasDraft, () =>
+    confirm("Some edits are unsaved or still saving. Continue and discard unsaved edits? An upload already accepted by the server cannot be undone."));
 
+  // Replacing or closing a vault must never leave a timer/old upload able to save later.
+  useEffect(() => () => { saveQueue?.discard(); }, [saveQueue]);
 
   // SSO unlock modal state
   const [showUnlockModal, setShowUnlockModal] = useState(false);
@@ -202,35 +199,45 @@ export function App() {
     URL.revokeObjectURL(url);
   };
 
-  const logout = async () => {
+  const closeVault = () => {
+    saveQueue?.discard();
     setSaveQueue(null);
     setHasDraft(false);
-    try {
-      await postJSON("/api/auth/logout", {});
-    } catch {}
-    setUser(null);
     setVault(null);
     setVaultKey(null);
+    setUnlockPassword("");
+    setShowUnlockModal(false);
+    setShowHistoryModal(false);
+  };
+
+  const logout = async () => {
+    closeVault();
+    // Clear the visible vault before waiting on a possibly stalled network request.
+    await postJSON("/api/auth/logout", {});
+    setUser(null);
   };
 
   const handleLogout = async () => {
-    if (canDiscardVault()) await logout();
+    if (!confirmDiscardVault()) return;
+    try { await logout(); } catch { alert("Vault locked locally, but server logout failed. Retry signing out when the connection returns."); }
   };
 
   const handleForgetDevice = async () => {
-    if (!canDiscardVault()) return;
-    if (user?.username) {
-      await clearDeviceVaultKey(user.username);
-    }
-    await logout();
+    if (!confirmDiscardVault()) return;
+    const username = user?.username;
+    closeVault();
+    // Neither storage failure nor a stalled logout may prevent the other action starting.
+    const results = await Promise.allSettled([
+      username ? clearDeviceVaultKey(username) : Promise.resolve(),
+      logout(),
+    ]);
+    if (results[0].status === "rejected") alert("Could not forget this device. Clear this site's browser data to remove its saved vault key.");
+    if (results[1].status === "rejected") alert("Vault locked locally, but server logout failed.");
   };
 
   const handleLockVault = () => {
-    if (!canDiscardVault()) return;
-    setSaveQueue(null);
-    setHasDraft(false);
-    setVault(null);
-    setVaultKey(null);
+    if (!confirmDiscardVault()) return;
+    closeVault();
     setShowUnlockModal(true);
   };
 
@@ -311,7 +318,7 @@ export function App() {
         navTab === "security" ? <SecuritySettings
           user={user}
           vaultKey={vaultKey!}
-          onUserUpdated={() => { if (canDiscardVault()) void checkAuth(); }}
+          onUserUpdated={() => { if (confirmDiscardVault()) void checkAuth(); }}
           onForgetDevice={handleForgetDevice}
         /> : null
       ) : (

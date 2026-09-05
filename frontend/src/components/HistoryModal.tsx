@@ -111,6 +111,12 @@ export function HistoryModal({ onClose, onRestored }: Props) {
           </button>
         </div>
 
+        {activeTab === "history" ? (
+          <p style={{ color: "var(--ink-muted)", fontSize: "0.85rem" }}>
+            Keeps up to 100 snapshots within the server’s retention period (90 days by default). Older snapshots are removed as you save or roll back.
+          </p>
+        ) : null}
+
         {message ? (
           <p style={{ color: "var(--accent)", fontSize: "0.9rem", display: "flex", alignItems: "center", gap: "0.4rem" }}>
             <CheckCircle2 size={16} /> {message}
@@ -122,7 +128,7 @@ export function HistoryModal({ onClose, onRestored }: Props) {
           <p style={{ color: "var(--ink-muted)" }}>Loading snapshots…</p>
         ) : activeTab === "history" ? (
           history.length === 0 ? (
-            <p style={{ color: "var(--ink-muted)" }}>No past version snapshots found (current version is preserved for 90 days).</p>
+            <p style={{ color: "var(--ink-muted)" }}>No past version snapshots found.</p>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
               {history.map((h) => (

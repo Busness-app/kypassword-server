@@ -3,7 +3,10 @@ package vault
 import (
 	"bytes"
 	"io"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestVaultStoreLifecycle(t *testing.T) {
@@ -102,5 +105,68 @@ func TestVaultStoreLifecycle(t *testing.T) {
 	m, _ = store.GetMetadata(userID)
 	if _, ok := m.DeviceEnvelopes["device_abc"]; ok {
 		t.Fatalf("expected device_abc removed")
+	}
+}
+
+func TestHistoryCountBoundOnSaveAndRollback(t *testing.T) {
+	store, err := NewStore(t.TempDir(), 90)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const limit = 100
+	for version := int64(0); version < limit+5; version++ {
+		if _, err := store.SaveVault("user", version, []byte("encrypted"), "", "", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	history, err := store.ListHistory("user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != limit {
+		t.Fatalf("history count = %d, want %d", len(history), limit)
+	}
+	for _, entry := range history {
+		if entry.Version < 5 {
+			t.Fatalf("old version %d survived count pruning", entry.Version)
+		}
+	}
+	if _, err := store.RestoreHistory("user", history[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	history, err = store.ListHistory("user")
+	if err != nil || len(history) != limit {
+		t.Fatalf("rollback history count = %d, err = %v", len(history), err)
+	}
+}
+
+func TestHistoryAgeRetention(t *testing.T) {
+	store, err := NewStore(t.TempDir(), 90)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for version := int64(0); version < 2; version++ {
+		if _, err := store.SaveVault("user", version, []byte("encrypted"), "", "", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	history, err := store.ListHistory("user")
+	if err != nil || len(history) != 1 {
+		t.Fatalf("history = %v, err = %v", history, err)
+	}
+	old := filepath.Join(store.historyDir("user"), history[0].ID+".kdbx")
+	expired := time.Now().AddDate(0, 0, -91)
+	if err := os.Chtimes(old, expired, expired); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveVault("user", 2, []byte("new encrypted"), "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Fatalf("expired snapshot still exists: %v", err)
+	}
+	history, err = store.ListHistory("user")
+	if err != nil || len(history) != 1 || history[0].Version != 2 {
+		t.Fatalf("recent history = %v, err = %v", history, err)
 	}
 }
