@@ -169,6 +169,7 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
 - `frontend/src/lib/lockedDraft.ts`: automatic lock checkpoints applied unsaved vault changes
   and unapplied entry fields, AES-GCM encrypted with the vault key and account-bound AAD.
   A separate IndexedDB database preserves the existing key-store version for older clients.
+  Each lock allocates a fresh checkpoint ID so duplicated tabs cannot overwrite each other.
   Copies belong to a tab/account, survive refresh, and are consumed after successful
   decryption on unlock. Restore uses the original server version and requires explicit retry
   for unsaved changes, preserving conflict protection. Storage failure retains encrypted

@@ -61,7 +61,7 @@ export function App() {
   const checkpoint = useRef<Promise<void>>(Promise.resolve());
   const memoryDraft = useRef<LockedDraft | undefined>(undefined);
   const [lockNotice, setLockNotice] = useState("");
-  const [tabId] = useState(() => {
+  const [tabId, setTabId] = useState(() => {
     try {
       const id = sessionStorage.getItem("kypassword.draftTab") ?? crypto.randomUUID();
       sessionStorage.setItem("kypassword.draftTab", id);
@@ -278,6 +278,16 @@ export function App() {
     const key = vaultKey;
     const metadata = { version: saveQueue.getSnapshot().version, dirty: saveQueue.getSnapshot().kind !== "saved", entry: draft.current };
     const binary = metadata.dirty || metadata.entry ? saveQueue.exportBinary() : null;
+    // Duplicating a browser tab copies sessionStorage. Allocate on each lock so those
+    // tabs cannot overwrite one another's subsequent recovery snapshots.
+    const nextTabId = binary ? crypto.randomUUID() : tabId;
+    const id = `${u.id}:${nextTabId}`;
+    let durableReference = true;
+    if (binary) {
+      setTabId(nextTabId);
+      try { sessionStorage.setItem("kypassword.draftTab", nextTabId); }
+      catch { durableReference = false; }
+    }
     // Capture the serializer before discarding; no subsequent network save can run.
     autoLock.current = () => {};
     setRecoveryPending(!!binary);
@@ -288,9 +298,11 @@ export function App() {
       try {
         if (binary) {
           memoryDraft.current = await sealDraft(await binary, metadata, key, u.id);
-          await draftStore(recoveryId(u), "put", memoryDraft.current);
-          setRecoveryPending(false);
-          setLockNotice("Vault locked. Your unsaved edits are encrypted on this device; unlock this tab to recover them.");
+          await draftStore(id, "put", memoryDraft.current);
+          setRecoveryPending(!durableReference);
+          setLockNotice(durableReference
+            ? "Vault locked. Your unsaved edits are encrypted on this device; unlock this tab to recover them."
+            : "Vault locked. Keep this tab open and unlock to recover your edits; the browser could not save the recovery reference.");
         } else {
           memoryDraft.current = undefined;
           await draftStore(recoveryId(u), "delete");
