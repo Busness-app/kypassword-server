@@ -46,11 +46,11 @@ type RecoveryKey = recoveryclient.RecoveryKey
 type Receipt = recoveryclient.Receipt
 
 type persistedState struct {
-	RecoveryURL   string      `json:"recoveryUrl,omitempty"`
-	SealedToken   string      `json:"sealedToken,omitempty"`
-	RecoveryKeyID string      `json:"recoveryKeyId,omitempty"`
-	Threshold     int         `json:"threshold,omitempty"`
-	TotalShares   int         `json:"totalShares,omitempty"`
+	RecoveryURL   *string     `json:"recoveryUrl,omitempty"`
+	SealedToken   *string     `json:"sealedToken,omitempty"`
+	RecoveryKeyID *string     `json:"recoveryKeyId,omitempty"`
+	Threshold     *int        `json:"threshold,omitempty"`
+	TotalShares   *int        `json:"totalShares,omitempty"`
 	LastDeposit   *Receipt    `json:"lastDeposit,omitempty"`
 	Interval      *string     `json:"intervalSec,omitempty"`
 	LastAttempt   *string     `json:"lastAttempt,omitempty"`
@@ -125,24 +125,24 @@ func (a lockedSettings) Get(key string) (string, error) {
 	}
 	switch key {
 	case "kyrecovery_url":
-		if st.RecoveryURL != "" {
-			return st.RecoveryURL, nil
+		if st.RecoveryURL != nil {
+			return *st.RecoveryURL, nil
 		}
 	case "kyrecovery_token_enc":
-		if st.SealedToken != "" {
-			return st.SealedToken, nil
+		if st.SealedToken != nil {
+			return *st.SealedToken, nil
 		}
 	case "kyrecovery_key_id":
-		if st.RecoveryKeyID != "" {
-			return st.RecoveryKeyID, nil
+		if st.RecoveryKeyID != nil {
+			return *st.RecoveryKeyID, nil
 		}
 	case "kyrecovery_threshold":
-		if st.Threshold != 0 {
-			return strconv.Itoa(st.Threshold), nil
+		if st.Threshold != nil {
+			return strconv.Itoa(*st.Threshold), nil
 		}
 	case "kyrecovery_total_shares":
-		if st.TotalShares != 0 {
-			return strconv.Itoa(st.TotalShares), nil
+		if st.TotalShares != nil {
+			return strconv.Itoa(*st.TotalShares), nil
 		}
 	case "kyrecovery_last_deposit":
 		if st.LastDeposit != nil {
@@ -175,15 +175,25 @@ func (a lockedSettings) write(key string, value *string) error {
 	}
 	switch key {
 	case "kyrecovery_url":
-		st.RecoveryURL = v
+		st.RecoveryURL = value
 	case "kyrecovery_token_enc":
-		st.SealedToken = v
+		st.SealedToken = value
 	case "kyrecovery_key_id":
-		st.RecoveryKeyID = v
+		st.RecoveryKeyID = value
 	case "kyrecovery_threshold":
-		st.Threshold, err = strconv.Atoi(v)
+		st.Threshold = nil
+		if value != nil {
+			var n int
+			n, err = strconv.Atoi(v)
+			st.Threshold = &n
+		}
 	case "kyrecovery_total_shares":
-		st.TotalShares, err = strconv.Atoi(v)
+		st.TotalShares = nil
+		if value != nil {
+			var n int
+			n, err = strconv.Atoi(v)
+			st.TotalShares = &n
+		}
 	case "kyrecovery_last_deposit":
 		st.LastDeposit = nil
 		if value != nil {
@@ -319,16 +329,16 @@ func (s *StateStore) Status() (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	status := Status{Paired: st.RecoveryURL != "" && st.SealedToken != "", RecoveryURL: st.RecoveryURL,
-		RecoveryKeyID: st.RecoveryKeyID, Threshold: st.Threshold, TotalShares: st.TotalShares, LastDeposit: st.LastDeposit}
-	if st.RecoveryKeyID != "" {
+	status := Status{Paired: valueOf(st.RecoveryURL) != "" && valueOf(st.SealedToken) != "", RecoveryURL: valueOf(st.RecoveryURL),
+		RecoveryKeyID: valueOf(st.RecoveryKeyID), Threshold: valueOf(st.Threshold), TotalShares: valueOf(st.TotalShares), LastDeposit: st.LastDeposit}
+	if valueOf(st.RecoveryKeyID) != "" {
 		_, err = s.recoveryKeyLocked()
 		status.KeyHealthy = err == nil
 		if err != nil {
 			status.Error = "recovery public key is missing or mismatched"
 		}
 	}
-	if st.RecoveryURL != "" || st.SealedToken != "" {
+	if valueOf(st.RecoveryURL) != "" || valueOf(st.SealedToken) != "" {
 		if _, err := recoveryclient.LoadPairing(s.dir, lockedSettings{s}, tokenSealer{s}); err != nil {
 			status.Error = "recovery pairing is incomplete or cannot be opened"
 		}
@@ -350,12 +360,12 @@ func (s *StateStore) CapsuleFiles() ([]capsule.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	if state.RecoveryKeyID == "" {
+	if valueOf(state.RecoveryKeyID) == "" {
 		return nil, nil
 	}
 	var files []capsule.File
 	names := []string{stateFile, publicKeyFile}
-	if state.SealedToken != "" {
+	if valueOf(state.SealedToken) != "" {
 		names = append(names, tokenKeyFile)
 	} else if _, err := os.Stat(s.tokenPath()); err == nil {
 		names = append(names, tokenKeyFile)
@@ -371,4 +381,12 @@ func (s *StateStore) CapsuleFiles() ([]capsule.File, error) {
 		files = append(files, capsule.File{Path: "config/" + item.name, Content: b, Mode: 0600})
 	}
 	return files, nil
+}
+
+// Presence matters to Settings: an explicit empty value is not a missing field.
+func valueOf[T any](p *T) (zero T) {
+	if p != nil {
+		return *p
+	}
+	return zero
 }
