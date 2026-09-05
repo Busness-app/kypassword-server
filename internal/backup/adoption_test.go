@@ -41,7 +41,7 @@ func TestLegacyPairingSurvivesLibraryWritesAndRestart(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	token := st.SealedToken
+	token := valueOf(st.SealedToken)
 	if e := recoveryclient.SetInterval(s, 900); e != nil {
 		t.Fatal(e)
 	}
@@ -55,7 +55,7 @@ func TestLegacyPairingSurvivesLibraryWritesAndRestart(t *testing.T) {
 		t.Fatalf("restart lost pairing: %v", e)
 	}
 	st, e = s.loadLocked()
-	if e != nil || st.SealedToken != token || st.LastDeposit.CapsuleID != receipt.CapsuleID {
+	if e != nil || valueOf(st.SealedToken) != token || st.LastDeposit.CapsuleID != receipt.CapsuleID {
 		t.Fatal("state changed unexpectedly")
 	}
 	for _, name := range []string{publicKeyFile, tokenKeyFile} {
@@ -248,5 +248,23 @@ func TestDecryptGuardRejectsProbe(t *testing.T) {
 	output, e := cmd.CombinedOutput()
 	if e == nil || !bytes.Contains(output, []byte("capsule.Open")) {
 		t.Fatalf("guard did not detect probe: %v %s", e, output)
+	}
+}
+
+func TestSettingsRetainExplicitEmptyValues(t *testing.T) {
+	s := NewStateStore(t.TempDir())
+	for _, key := range []string{"kyrecovery_url", "kyrecovery_token_enc", "kyrecovery_key_id", "backup_interval_sec", "backup_last_attempt"} {
+		if e := s.Set(key, ""); e != nil {
+			t.Fatal(e)
+		}
+		if v, e := NewStateStore(s.dir).Get(key); e != nil || v != "" {
+			t.Fatalf("%s empty value lost: %v", key, e)
+		}
+		if e := s.Delete(key); e != nil {
+			t.Fatal(e)
+		}
+		if _, e := s.Get(key); !errors.Is(e, recoveryclient.ErrNotFound) {
+			t.Fatalf("%s was not deleted", key)
+		}
 	}
 }

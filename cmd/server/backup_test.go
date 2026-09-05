@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/Busness-app/ky-primitives/recoverykey"
 	"github.com/Busness-app/kypassword-server/internal/backup"
+	"github.com/Busness-app/kypassword-server/internal/users"
 )
 
 func TestExportRestoreCLIWithSyntheticShares(t *testing.T) {
@@ -61,5 +63,38 @@ func TestExportRestoreCLIWithSyntheticShares(t *testing.T) {
 	out.Reset()
 	if e := runRestore([]string{"--capsule", path, "--to", filepath.Join(root, "short")}, strings.NewReader(shares[0].String()+"\n"), &out); e == nil {
 		t.Fatal("insufficient shares accepted")
+	}
+}
+
+func TestRestorePreLibraryCapsule(t *testing.T) {
+	fixture := filepath.Join("..", "..", "internal", "backup", "testdata", "legacy-capsule")
+	b, e := os.ReadFile(filepath.Join(fixture, "synthetic-shares.json"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	var shares []string
+	if e := json.Unmarshal(b, &shares); e != nil {
+		t.Fatal(e)
+	}
+	target := filepath.Join(t.TempDir(), "restored")
+	var out bytes.Buffer
+	if e := runRestore([]string{"--capsule", filepath.Join(fixture, "capsule.kycap"), "--to", target}, strings.NewReader(strings.Join(shares, "\n")), &out); e != nil {
+		t.Fatal(e)
+	}
+	pairing, e := backup.NewStateStore(filepath.Join(target, "config")).LoadPairing()
+	if e != nil || pairing.Token != "synthetic-capsule-token" {
+		t.Fatalf("restored legacy token lost: %v", e)
+	}
+	u, e := users.NewStore(filepath.Join(target, "config"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	alice, e := u.GetBySSOSub("sub-alice")
+	if e != nil {
+		t.Fatal(e)
+	}
+	raw, e := os.ReadFile(filepath.Join(target, "data", "vaults", alice.ID, "vault.kdbx"))
+	if e != nil || string(raw) != "encrypted-kdbx" {
+		t.Fatalf("legacy vault changed: %v", e)
 	}
 }
