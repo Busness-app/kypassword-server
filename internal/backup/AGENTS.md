@@ -14,6 +14,7 @@ write-once pins, sealing, delivery, retention, schedule calculation, drill and r
 - Settings writes are atomic under the state mutex; pairing/pin/unpair hold it across
   library writes. The operation mutex prevents those changes during a backup run; lifecycle operations
   and competing runs return ErrDepositInProgress immediately instead of waiting.
+  ClaimPairing reserves this lock before consuming a remote one-use pairing code.
 - `kypassword` is the capsule/service binding and RunConfig.AppName; `KyPassword` is the
   display label. RunConfig.DataDir is CONFIG_DIR; drill scratch is under DATA_DIR.
 - Collect only through existing store snapshots. Include effective operational secrets
