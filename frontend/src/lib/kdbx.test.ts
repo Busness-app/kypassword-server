@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { KeePassVault, deriveArgon2Key } from "./kdbx.js";
 import * as kdbxweb from "kdbxweb";
 
-const { Consts, Credentials, ProtectedValue, Kdbx } =
+const { Consts, Credentials, ProtectedValue, Kdbx, KdbxError } =
   (kdbxweb as { default?: typeof kdbxweb }).default ?? kdbxweb;
 
 const vaultKey = () => {
@@ -42,7 +42,7 @@ describe("KDBX vault round-trip", () => {
     const wrong = key.slice();
     wrong[0] ^= 0xff;
     await assert.rejects(() => KeePassVault.open(original, wrong),
-      (err: unknown) => err instanceof kdbxweb.KdbxError && err.code === Consts.ErrorCodes.InvalidKey);
+      (err: unknown) => err instanceof KdbxError && err.code === Consts.ErrorCodes.InvalidKey);
 
     const opened = await KeePassVault.open(original, key);
     assert.equal(opened.getEntries()[0].password, "keep this password");
