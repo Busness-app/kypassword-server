@@ -313,3 +313,31 @@ test("password whitespace stays significant during parsing and duplicate detecti
   assert.equal(applyImportToVault(vault, rows, { folderMode: "csv_folders" }).importedCount, 3);
   assert.equal(applyImportToVault(vault, rows, { folderMode: "csv_folders" }).skippedDuplicates, 3);
 });
+
+test("deleted credentials can be re-imported, including after encrypted reload", async () => {
+  const key = new Uint8Array(32).fill(10);
+  let vault = await KeePassVault.createNew(key);
+  const row = { id: "deleted", title: "Reimport me", username: "user", password: "secret", url: "https://example.test", notes: "note", totpSeed: "", folder: "", selected: true };
+  applyImportToVault(vault, [row], { folderMode: "csv_folders" });
+  vault.deleteEntry(vault.getEntries()[0].uuid);
+  assert.equal(findDuplicateImports(vault, [row]).size, 0);
+  vault = await KeePassVault.open(await vault.exportBinary(), key);
+  assert.equal(findDuplicateImports(vault, [row]).size, 0);
+  assert.equal(applyImportToVault(vault, [row], { folderMode: "csv_folders" }).importedCount, 1);
+  assert.equal(findDuplicateImports(vault, [row]).size, 1, "the re-imported live entry still prevents another duplicate");
+});
+
+test("duplicate detection excludes recycle-bin descendants using identity, not folder names", async () => {
+  const vault = await KeePassVault.createNew(new Uint8Array(32).fill(11));
+  const row = { id: "nested", title: "Nested recycled", username: "u", password: "p", url: "", notes: "", totpSeed: "", folder: "", selected: true };
+  const deleted = vault.createEntry({ ...row, groupUuid: "" });
+  vault.deleteEntry(deleted.uuid);
+  const recycled = vault.getEntries().find(entry => entry.uuid === deleted.uuid);
+  assert.ok(recycled, "the library soft-deletes into its recycle bin");
+  const nested = vault.createGroup("Nested", recycled.groupUuid);
+  vault.createEntry({ ...row, groupUuid: nested.uuid });
+  assert.equal(findDuplicateImports(vault, [row]).size, 0);
+  const liveGroup = vault.createGroup("Recycle Bin");
+  vault.createEntry({ ...row, groupUuid: liveGroup.uuid });
+  assert.equal(findDuplicateImports(vault, [row]).size, 1, "a live group named Recycle Bin still counts");
+});

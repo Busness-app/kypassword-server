@@ -409,7 +409,7 @@ function importContentKey(entry: Pick<VaultEntry, "title" | "username" | "passwo
 }
 
 export function findDuplicateImports(vault: KeePassVault, entries: ImportedEntryPreview[]): Set<string> {
-  const seen = new Set(vault.getEntries().map(importContentKey));
+  const seen = new Set(vault.getLiveEntries().map(importContentKey));
   const duplicates = new Set<string>();
   for (const entry of entries) {
     const key = importContentKey({ ...entry, title: entry.title || "Untitled" });
