@@ -37,3 +37,10 @@ export class IdleDeadline {
     return true;
   }
 }
+
+// A fresh tab has no sessionStorage. Missing/invalid activity must not give an old
+// trusted-device key an unlimited lifetime; a backwards clock also requires unlock.
+export function cachedKeyExpired(lastActivity: string | null, timeoutMs: number, now = Date.now()): boolean {
+  const last = Number(lastActivity);
+  return !Number.isFinite(last) || last <= 0 || now < last || now - last >= timeoutMs;
+}

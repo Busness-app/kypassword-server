@@ -164,7 +164,9 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   minutes; Security offers 1/5/15/30/60 minutes saved per browser. Check both wall and
   monotonic elapsed time before accepting activity, including focus/visibility resume.
   Lock invalidates pending unlocks and discards the save queue. A session-storage lock
-  marker prevents refreshing the locked tab from using its trusted key; automatic lock
+  marker prevents refreshing the locked tab from using its trusted key. Mirror activity and
+  lock markers in localStorage so a new tab after closure/browser restart also expires the
+  cached key; missing or invalid activity requires a password. Automatic lock
   also removes that cached device key. Other already-unlocked tabs keep their own timers.
 - `frontend/src/lib/lockedDraft.ts`: automatic lock checkpoints applied unsaved vault changes
   and unapplied entry fields, AES-GCM encrypted with the vault key and account-bound AAD.

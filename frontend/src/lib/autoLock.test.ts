@@ -25,3 +25,13 @@ test("invalid browser preferences fall back to five minutes", () => {
     assert.equal(parseAutoLockMinutes(String(value)), value);
   }
 });
+
+test("cached-key expiry survives a fresh tab and fails closed without a valid timestamp", async () => {
+  const { cachedKeyExpired } = await import("./autoLock");
+  assert.equal(cachedKeyExpired("1000", 60000, 60999), false);
+  assert.equal(cachedKeyExpired("1000", 60000, 61000), true);
+  assert.equal(cachedKeyExpired("1000", 60000, 999), true);
+  for (const value of [null, "", "0", "-1", "NaN", "Infinity", "broken"]) {
+    assert.equal(cachedKeyExpired(value, 60000, 61000), true);
+  }
+});
