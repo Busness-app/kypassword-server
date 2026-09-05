@@ -63,12 +63,15 @@ func (s *Store) loadFromDisk() error {
 // Load returns the active settings. The environment takes precedence over sso.json when
 // it configures SSO at all — see env.go for why it has to be able to.
 func (s *Store) Load() SSOSettings {
-	if fromEnv, ok := SettingsFromEnv(); ok {
-		return fromEnv
+	settings, fromEnv := SettingsFromEnv()
+	if !fromEnv {
+		s.mu.RLock()
+		settings = s.settings
+		s.mu.RUnlock()
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.settings
+	// Normalize configuration once, so discovery and token verification use the same issuer.
+	settings.IssuerURL = strings.TrimRight(settings.IssuerURL, "/")
+	return settings
 }
 
 // Snapshot serializes the effective settings. Environment settings take
@@ -118,7 +121,6 @@ func DiscoverEndpoints(ctx context.Context, issuerURL string, client *http.Clien
 	if err := requireHTTPS(issuerURL); err != nil {
 		return nil, err
 	}
-	expectedIssuer := issuerURL
 	issuerURL = strings.TrimRight(issuerURL, "/")
 	wellKnownURL := issuerURL + "/.well-known/openid-configuration"
 
@@ -154,8 +156,8 @@ func DiscoverEndpoints(ctx context.Context, issuerURL string, client *http.Clien
 		disc.UserinfoEndpoint = issuerURL + "/oauth/userinfo"
 	}
 
-	if disc.Issuer != expectedIssuer {
-		return nil, errors.New("discovery issuer mismatch")
+	if disc.Issuer != issuerURL {
+		return nil, fmt.Errorf("discovery issuer mismatch: expected %q, received %q", issuerURL, disc.Issuer)
 	}
 	if disc.JWKSURI == "" {
 		disc.JWKSURI = issuerURL + "/.well-known/jwks.json"

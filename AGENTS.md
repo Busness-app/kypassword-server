@@ -22,6 +22,10 @@ no password hash, no salt, no client-derived verifier, no recovery hash. A test 
 `internal/users/users_test.go` asserts those JSON keys never reappear; if you find
 yourself adding one, the design has been misread.
 
+- Pending OIDC attempts are bounded at 1024; at capacity, evict the earliest expiry
+  and admit new logins. Evicted attempts must restart. Issuer configuration is normalized
+  by removing trailing slashes before both discovery and token verification; discovered
+  and signed issuer values must still match exactly.
 - Accounts are matched on the OIDC `sub` alone, which is the KySignOn user ID
   (`kysignon-server/internal/oauth/oauth.go:310,326`). Never match on username: doing
   so hands any KySignOn identity the local account that shares its name, and its vault.

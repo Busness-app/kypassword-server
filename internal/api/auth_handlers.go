@@ -102,9 +102,15 @@ func (s *Server) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if len(s.oidcPending) >= 1024 {
-		s.oidcMu.Unlock()
-		http.Error(w, "too many pending logins", http.StatusServiceUnavailable)
-		return
+		// ponytail: scan at most 1024 entries; use an ordered cache if the cap grows.
+		oldest := ""
+		var expires time.Time
+		for id, attempt := range s.oidcPending {
+			if oldest == "" || attempt.Expires.Before(expires) {
+				oldest, expires = id, attempt.Expires
+			}
+		}
+		delete(s.oidcPending, oldest)
 	}
 	s.oidcPending[state] = oidcAttempt{Settings: settings, Discovery: *disc, Verifier: verifier, Nonce: nonce, RedirectURI: redirectURI, LinkUserID: linkUserID, Expires: time.Now().Add(5 * time.Minute)}
 	s.oidcMu.Unlock()

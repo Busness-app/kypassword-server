@@ -285,3 +285,47 @@ func TestOIDCRefreshesRotatedSigningKey(t *testing.T) {
 		t.Fatalf("rotated-key login failed: %d %s", w.Code, w.Body.String())
 	}
 }
+
+func TestOIDCLoginSurvivesPendingAttemptFlood(t *testing.T) {
+	srv := newTestServer(t)
+	idp := mockIdP(t, map[string]any{"sub": "flood-survivor"})
+	srv.oidcHTTP = idp.Client()
+	if err := srv.ssoStore.Save(sso.SSOSettings{Enabled: true, IssuerURL: idp.URL, ClientID: "kypassword-app", AutoProvision: true}); err != nil {
+		t.Fatal(err)
+	}
+	first, _ := beginOIDCTest(t, srv)
+	for i := 0; i < 1024; i++ {
+		beginOIDCTest(t, srv)
+	}
+	srv.oidcMu.Lock()
+	count := len(srv.oidcPending)
+	_, oldPresent := srv.oidcPending[first.Value]
+	srv.oidcMu.Unlock()
+	if count != 1024 || oldPresent {
+		t.Fatalf("pending count=%d oldest retained=%t", count, oldPresent)
+	}
+	w := driveSSOCallback(t, srv)
+	if w.Code != 302 || !hasSessionCookie(w) {
+		t.Fatalf("fresh login failed: %d %s", w.Code, w.Body.String())
+	}
+}
+func TestOIDCTrailingSlashIssuer(t *testing.T) {
+	for _, env := range []bool{false, true} {
+		t.Run(fmt.Sprint("env=", env), func(t *testing.T) {
+			srv := newTestServer(t)
+			idp := mockIdP(t, map[string]any{"sub": "slash-user"})
+			srv.oidcHTTP = idp.Client()
+			if env {
+				t.Setenv(sso.EnvIssuer, idp.URL+"/")
+				t.Setenv(sso.EnvClientID, "kypassword-app")
+				t.Setenv(sso.EnvClientSecret, "synthetic")
+			} else if err := srv.ssoStore.Save(sso.SSOSettings{Enabled: true, IssuerURL: idp.URL + "/", ClientID: "kypassword-app", AutoProvision: true}); err != nil {
+				t.Fatal(err)
+			}
+			w := driveSSOCallback(t, srv)
+			if w.Code != 302 || !hasSessionCookie(w) {
+				t.Fatalf("slash login failed: %d %s", w.Code, w.Body.String())
+			}
+		})
+	}
+}
