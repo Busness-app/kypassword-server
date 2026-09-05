@@ -1,4 +1,4 @@
-import { KeePassVault } from "./kdbx";
+import { KeePassVault, type VaultEntry } from "./kdbx";
 
 export type CsvProvider =
   | "auto"
@@ -399,6 +399,23 @@ function splitFolderPath(folder: string): string[] {
     .filter(Boolean);
 }
 
+// Compare all CSV-supported content exactly, across folders. Never collapse changed
+// passwords, notes or TOTP secrets into an older entry. These keys stay in memory only.
+function importContentKey(entry: Pick<VaultEntry, "title" | "username" | "password" | "url" | "notes" | "totpSeed">): string {
+  return JSON.stringify([entry.title, entry.username, entry.password, entry.url, entry.notes, entry.totpSeed || ""]);
+}
+
+export function findDuplicateImports(vault: KeePassVault, entries: ImportedEntryPreview[]): Set<string> {
+  const seen = new Set(vault.getEntries().map(importContentKey));
+  const duplicates = new Set<string>();
+  for (const entry of entries) {
+    const key = importContentKey({ ...entry, title: entry.title || "Untitled" });
+    if (seen.has(key)) duplicates.add(entry.id);
+    if (entry.selected) seen.add(key);
+  }
+  return duplicates;
+}
+
 /**
  * Apply selected imported entries into a KeePassVault instance
  */
@@ -409,8 +426,15 @@ export function applyImportToVault(
     folderMode: "csv_folders" | "single_folder";
     targetFolderUuid?: string;
     defaultFolderName?: string;
+    skipDuplicates?: boolean;
+    newFolderName?: string;
   }
-): { importedCount: number; foldersCreated: string[] } {
+): { importedCount: number; skippedDuplicates: number; foldersCreated: string[] } {
+  const duplicates = options.skipDuplicates !== false ? findDuplicateImports(vault, entries) : new Set<string>();
+  const selected = entries.filter(item => item.selected);
+  const pending = selected.filter(item => !duplicates.has(item.id));
+  const skippedDuplicates = selected.length - pending.length;
+  if (pending.length === 0) return { importedCount: 0, skippedDuplicates, foldersCreated: [] };
   const existingGroups = vault.getGroups();
   const rootUuid = existingGroups[0]?.uuid || "";
 
@@ -448,13 +472,18 @@ export function applyImportToVault(
   };
 
   let importedCount = 0;
+  let singleFolderUuid = options.targetFolderUuid || rootUuid;
+  if (options.folderMode === "single_folder" && options.newFolderName?.trim()) {
+    const name = options.newFolderName.trim();
+    singleFolderUuid = vault.createGroup(name).uuid;
+    foldersCreated.push(name);
+  }
 
-  for (const item of entries) {
-    if (!item.selected) continue;
+  for (const item of pending) {
 
     const targetGroupUuid =
       options.folderMode === "single_folder"
-        ? options.targetFolderUuid || rootUuid
+        ? singleFolderUuid
         : getOrCreateGroup(item.folder || options.defaultFolderName || "");
 
     vault.createEntry({
@@ -470,5 +499,5 @@ export function applyImportToVault(
     importedCount++;
   }
 
-  return { importedCount, foldersCreated };
+  return { importedCount, skippedDuplicates, foldersCreated };
 }

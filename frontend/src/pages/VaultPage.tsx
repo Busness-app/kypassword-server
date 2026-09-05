@@ -647,14 +647,14 @@ export function VaultPage({ vault, vaultVersion, onSave, onExport, onReload, sav
           vault={vault}
           groups={groups}
           onClose={() => setShowCsvImport(false)}
-          onImportComplete={(count, createdFolders) => {
-            onChanged();
+          onImportComplete={(count, createdFolders, skipped) => {
+            if (count > 0) onChanged();
             refreshVaultData();
             const folderText =
               createdFolders.length > 0
                 ? ` (${createdFolders.length} folder${createdFolders.length === 1 ? "" : "s"} created)`
                 : "";
-            setImportMessage(`Successfully imported ${count} password${count === 1 ? "" : "s"}${folderText}. Changes are saved automatically.`);
+            setImportMessage(`Successfully imported ${count} password${count === 1 ? "" : "s"}${folderText}. ${skipped} duplicate${skipped === 1 ? "" : "s"} skipped.${count > 0 ? " Changes are saved automatically." : ""}`);
           }}
         />
       ) : null}

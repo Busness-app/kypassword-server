@@ -275,4 +275,8 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   Google Chrome, 1Password, Bitwarden, LastPass, DashPass (Dashlane), and generic CSV formats. Provider
   folder values are split on `/` and `\` into nested KeePass groups, reusing existing groups by path;
   all parsing and vault mutation happen client-side. Covered by `csvImport.test.ts`.
-  ponytail: no duplicate detection against existing entries — re-importing the same CSV duplicates it.
+  Exact duplicate detection compares title, username, password, URL, notes and TOTP across
+  all vault folders and selected CSV rows. Skip duplicates is on by default, with explicit
+  opt-out. Preview and apply share the same comparison; apply rechecks current vault contents.
+  Skipped-only imports create no folders or save revisions. Changed field values are retained
+  as separate entries; no fuzzy matching, merging, or normalization is performed.
