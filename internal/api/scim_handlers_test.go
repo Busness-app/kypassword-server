@@ -65,6 +65,10 @@ func TestSharedSCIMClientLifecycle(t *testing.T) {
 	if err != nil || replaced.UserName != "renamed" {
 		t.Fatalf("replace: %+v %v", replaced, err)
 	}
+	tally, _ := auditTally(t, srv)
+	if tally["scim.user_created"] != 1 || tally["scim.user_updated"] != 1 {
+		t.Fatalf("creation and replacement must have distinct actions: %+v", tally)
+	}
 	local, _ := srv.users.Get(created.ID)
 	if local.Role != users.RoleAdmin || local.SSOSub != input.ExternalID {
 		t.Fatalf("identity/role: %+v", local)
@@ -123,6 +127,10 @@ func TestSharedSCIMClientLifecycle(t *testing.T) {
 	recreated, err := client.CreateUser(ctx, input)
 	if err != nil || recreated.ID != created.ID {
 		t.Fatalf("same identity must recover its retained account: %+v %v", recreated, err)
+	}
+	tally, _ = auditTally(t, srv)
+	if tally["scim.user_created"] != 1 || tally["scim.user_restored"] != 1 {
+		t.Fatalf("restoration must not look like a new account: %+v", tally)
 	}
 }
 

@@ -99,6 +99,8 @@ Signed `user.updated` acknowledges but never restores inactive tombstones, recor
 `sync.update_ignored_deleted`; explicit signed recreation records `sync.user_restored`.
 SCIM authentication/disabled-route failures use `recordAnonymousRejection` with action
 `scim.rejected`, a fixed non-secret detail and the existing source audit budget.
+Successful SCIM writes distinguish `scim.user_created`, `scim.user_restored` and
+`scim.user_updated`; details record role/active state or transitions, never credentials.
 Deactivation invalidates existing sessions and outstanding pairing codes. The standard
 client must use its bearer token and returned server IDs; the old signed generic sender's
 empty DELETE payload is not accepted by this interface. `Admin → User Directory` shows

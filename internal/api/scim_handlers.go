@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -213,7 +214,17 @@ func (s *Server) handleSCIMUser(w http.ResponseWriter, r *http.Request) {
 	if status == http.StatusCreated {
 		w.Header().Set("Location", resource.Meta.Location)
 	}
-	s.record(r, "scim.user_updated", id, "", clientIP(r), "applied SCIM directory resource")
+	action := "scim.user_updated"
+	detail := fmt.Sprintf("role %s -> %s; active %t -> %t", existing.Role, current.Role, existing.Active, current.Active)
+	if status == http.StatusCreated {
+		action = "scim.user_created"
+		detail = fmt.Sprintf("provisioned account; role %s; active %t", current.Role, current.Active)
+		if isSCIMDeleted(existing) {
+			action = "scim.user_restored"
+			detail = fmt.Sprintf("restored retained account; role %s -> %s; active %t -> %t", existing.Role, current.Role, existing.Active, current.Active)
+		}
+	}
+	s.record(r, action, id, "", clientIP(r), detail)
 	writeSCIM(w, status, resource)
 }
 
