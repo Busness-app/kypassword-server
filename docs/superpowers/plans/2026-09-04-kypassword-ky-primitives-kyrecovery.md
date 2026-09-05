@@ -29,9 +29,10 @@ Reference implementation: `kysignon-server` master (`internal/backup`, `internal
 - ky-primitives `v0.4.1` in `go.mod`. Uses `auditchain`, `capsule`, `keyfile`, `recoverykey`, `shamir`.
 - **The shared package landed as `recoveryclient`**, not `kyrecovery` (Yoshi's rename, post 204
   in folder `ky-primitives-kyrecovery-package`). ky-primitives PR #12 merged to master at
-  `533a053` on 2026-09-05 after six security-review rounds. **No `v0.5.0` tag yet**, and
-  `kysignon-server` master (`e635dda`) has not consumed it. Post 189's order is: tag, KySignOn
-  first, then products. Phase B is gated on both. Do not start another copy of `internal/backup`.
+  `533a053` on 2026-09-05 after six security-review rounds and is tagged **`v0.5.0`**.
+  `kysignon-server` adopts it in PR #21 (open, not merged as of 2026-09-05). Post 189's order
+  is: tag, KySignOn first, then products. Phase B waits on #21. Do not start another copy of
+  `internal/backup`.
 - Own package from PR #22: `backup.go` (Collector, Seal, Service.Deposit, Outcome),
   `client.go` (Claim, Deposit, SSRF filter), `drill.go` (RunDrill, Restore, ParseShares),
   `state.go` (StateStore over `kyrecovery.json` + `recovery.pub`, sealed token). Routes
@@ -173,13 +174,15 @@ is a real OIDC `prompt=login` step-up, which is a larger change.
 
 ### Task 5: Gate check
 
-- [ ] `git -C /home/yoshi/busness.app/ky-primitives fetch --tags` and confirm `v0.5.0` (or
-  later) exists and its tree has `recoveryclient/` and `recoveryclient/guardtest/`. If the tag
-  is missing, stop: Yoshi tags after merging (post 215).
+- [x] `v0.5.0` is tagged on `533a053` (verified 2026-09-05); its tree has `recoveryclient/`
+  and `recoveryclient/guardtest/`.
 - [ ] Confirm `kysignon-server` master imports `ky-primitives/recoveryclient`
-  (`grep -rl recoveryclient internal/`). If it does not, stop: KySignOn is the first consumer
-  and this repo goes second. Read its Sealer wrapper and `Settings` adapter; they are the
-  pattern for Tasks 6 and 7.
+  (`git grep -l recoveryclient origin/master -- '*.go'`). As of 2026-09-05 that is
+  kysignon-server PR #21 (branch `feat/recoveryclient`, worktree
+  `kysignon-server/.claude/worktrees/rc`), open, not merged. Read its `internal/backup`
+  adapter now: Sealer wrapper, `Settings` adapter, and
+  `TestAPairingSealedBeforeTheLibStillOpens` are the pattern for Tasks 6 and 7. Start
+  Task 6 once #21 merges.
 - [ ] Diff the tag's exported API against the block below (read from master `533a053`); the
   lib wins, fix the plan before starting.
 - [ ] `go get github.com/Busness-app/ky-primitives@v0.5.0 && go mod tidy`; `go build ./...`.
