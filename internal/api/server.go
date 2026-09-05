@@ -19,6 +19,7 @@ import (
 	"github.com/Busness-app/kypassword-server/internal/backup"
 	"github.com/Busness-app/kypassword-server/internal/devices"
 	"github.com/Busness-app/kypassword-server/internal/sso"
+	kysync "github.com/Busness-app/kypassword-server/internal/sync"
 	"github.com/Busness-app/kypassword-server/internal/users"
 	"github.com/Busness-app/kypassword-server/internal/vault"
 )
@@ -41,6 +42,7 @@ type Server struct {
 	backupService *backup.Service
 	recovery      backup.RecoveryClient
 	pairingSecret string
+	scimToken     string
 
 	// auditFailures counts audit writes that did not reach the log. Sticky: the
 	// missing record never comes back, so only a restart — after someone has
@@ -71,6 +73,7 @@ type Config struct {
 	DataDir       string
 	ConfigDir     string
 	PairingSecret string
+	SCIMToken     string
 	RetentionDays int
 	Backup        backup.Config
 	AppVersion    string
@@ -84,6 +87,11 @@ func NewServer(cfg Config) (*Server, error) {
 	if cfg.ConfigDir == "" {
 		cfg.ConfigDir = "./config"
 	}
+	token, err := kysync.LoadSCIMToken(cfg.ConfigDir, cfg.SCIMToken)
+	if err != nil {
+		return nil, err
+	}
+	cfg.SCIMToken = token
 	if cfg.RetentionDays <= 0 {
 		cfg.RetentionDays = 90
 	}
@@ -116,7 +124,7 @@ func NewServer(cfg Config) (*Server, error) {
 	recovery := backup.NewClient(cfg.Backup.AllowPrivate)
 	collector := backup.Collector{
 		Vault: vStore, Audit: aStore, Users: uStore, Devices: dStore, SSO: ssoSt,
-		State: backupState, PairingSecret: cfg.PairingSecret, RetentionDays: cfg.RetentionDays,
+		State: backupState, PairingSecret: cfg.PairingSecret, SCIMToken: cfg.SCIMToken, RetentionDays: cfg.RetentionDays,
 		AppVersion: cfg.AppVersion, DataDir: cfg.DataDir,
 	}
 
@@ -129,6 +137,7 @@ func NewServer(cfg Config) (*Server, error) {
 		backupState:   backupState,
 		recovery:      recovery,
 		pairingSecret: cfg.PairingSecret,
+		scimToken:     cfg.SCIMToken,
 		sessions:      make(map[string]Session),
 		oidcPending:   make(map[string]oidcAttempt), oidcHTTP: sso.NewHTTPClient(), syncReceipts: make(map[string]syncReceipt),
 		rejects:   newAuditBudget(auditBudgetWindow, auditBudgetBurst),
@@ -143,6 +152,7 @@ func NewServer(cfg Config) (*Server, error) {
 
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
+	mux.Handle("/scim/v2/", s.scimRoutes())
 
 	// Public auth. KySignOn is the only way in: there is no local login, no login
 	// parameters to fetch, no recovery-as-site-access and no first-run setup. Paper
@@ -182,6 +192,7 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("POST /api/sync/webhook", s.signedSyncHandler())
 
 	// Admin Operations
+	mux.HandleFunc("GET /api/admin/provisioning", s.withAdmin(s.handleProvisioningStatus))
 	mux.HandleFunc("GET /api/admin/users", s.withAdmin(s.handleAdminUsersList))
 	mux.HandleFunc("PUT /api/admin/users/{id}/role", s.withAdmin(s.handleAdminUserRole))
 	mux.HandleFunc("POST /api/admin/users/{id}/deactivate", s.withAdmin(s.handleAdminUserDeactivate))
@@ -286,6 +297,10 @@ func (s *Server) startSession(w http.ResponseWriter, r *http.Request, userID str
 
 	now := time.Now().UTC()
 	s.sessMu.Lock()
+	if u, err := s.users.Get(userID); err != nil || !u.Active {
+		s.sessMu.Unlock()
+		return fmt.Errorf("account is inactive")
+	}
 	s.sessions[token] = Session{
 		UserID:          userID,
 		IssuedAt:        now,

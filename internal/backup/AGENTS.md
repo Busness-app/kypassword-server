@@ -3,7 +3,7 @@
 ## Purpose and ownership
 
 KyPassword owns file-store snapshots, the settings/sealer adapter, product validation,
-audit/HTTP/CLI integration and UI. `ky-primitives/recoveryclient` v0.5.1 owns pairing,
+audit/HTTP/CLI integration and UI. `ky-primitives/recoveryclient` v0.6.0 owns pairing,
 write-once pins, sealing, delivery, retention, schedule calculation, drill and restore.
 
 ## Local contracts
@@ -18,7 +18,8 @@ write-once pins, sealing, delivery, retention, schedule calculation, drill and r
 - `kypassword` is the capsule/service binding and RunConfig.AppName; `KyPassword` is the
   display label. RunConfig.DataDir is CONFIG_DIR; drill scratch is under DATA_DIR.
 - Collect only through existing store snapshots. Include effective operational secrets
-  inside the sealed capsule. Manually pinned/local-only instances need no token key.
+  inside the sealed capsule. The optional effective SCIM provisioning token is included as
+  `config/scim.token` (0600); restore validation checks its format without environment overrides. Manually pinned/local-only instances need no token key.
 - Vault verification is ciphertext/checksum-only. Verify audit snapshots against their
   captured key and anchor without live environment overrides or file repair. Drills check
   the opened recipe's types, required paths and mandatory audit/vault flags.

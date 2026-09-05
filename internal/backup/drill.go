@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	kysync "github.com/Busness-app/kypassword-server/internal/sync"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -102,6 +103,8 @@ func validateRestore(_ context.Context, root string, manifest capsule.Manifest) 
 		}
 		add(path, err)
 	}
+	_, tokenErr := kysync.LoadSCIMToken(filepath.Join(root, "config"), "")
+	add("optional SCIM token", tokenErr)
 	err := verifyRestoredAudit(root)
 	add("audit chain", err)
 
