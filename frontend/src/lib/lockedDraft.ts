@@ -11,12 +11,14 @@ export async function sealDraft(binary: ArrayBuffer, metadata: DraftMetadata, ke
   const plain = new Uint8Array(4 + json.length + binary.byteLength);
   new DataView(plain.buffer).setUint32(0, json.length);
   plain.set(json, 4);
+  json.fill(0);
   plain.set(new Uint8Array(binary), 4 + json.length);
-  const cryptoKey = await crypto.subtle.importKey("raw", new Uint8Array(key), "AES-GCM", false, ["encrypt"]);
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv, additionalData: new TextEncoder().encode(account) }, cryptoKey, plain);
-  plain.fill(0);
-  return { iv, ciphertext };
+  try {
+    const cryptoKey = await crypto.subtle.importKey("raw", new Uint8Array(key), "AES-GCM", false, ["encrypt"]);
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv, additionalData: new TextEncoder().encode(account) }, cryptoKey, plain);
+    return { iv, ciphertext };
+  } finally { plain.fill(0); }
 }
 
 export async function openDraft(draft: LockedDraft, key: Uint8Array, account: string): Promise<{ binary: ArrayBuffer; metadata: DraftMetadata }> {
@@ -58,4 +60,18 @@ export async function draftStore(id: string, operation: "get" | "put" | "delete"
       tx.onerror = () => reject(tx.error);
     });
   } finally { db.close(); }
+}
+
+// A recovery-store outage must not prevent opening the server vault. Keep failure
+// distinct from an absent copy so the UI can warn and retain its recovery reference.
+export async function readDraft(id: string | undefined): Promise<
+  { kind: "available"; draft: LockedDraft | undefined } | { kind: "unavailable" }
+> {
+  try { return { kind: "available", draft: id ? await draftStore(id, "get") : undefined }; }
+  catch { return { kind: "unavailable" }; }
+}
+
+export async function removeDraft(id: string | undefined): Promise<boolean> {
+  try { if (id) await draftStore(id, "delete"); return true; }
+  catch { return false; }
 }

@@ -170,9 +170,12 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   and unapplied entry fields, AES-GCM encrypted with the vault key and account-bound AAD.
   A separate IndexedDB database preserves the existing key-store version for older clients.
   Each lock allocates a fresh checkpoint ID so duplicated tabs cannot overwrite each other.
+  Ordinary unlock does not open recovery storage unless this account has a checkpoint reference.
   Copies belong to a tab/account, survive refresh, and are consumed after successful
   decryption on unlock. Restore uses the original server version and requires explicit retry
-  for unsaved changes, preserving conflict protection. Storage failure retains encrypted
+  for unsaved changes, preserving conflict protection. Recovery read failures open the server
+  copy with a notice and retain the unread reference; cleanup failures also surface a notice.
+  Cache-key write failure does not block password unlock. Storage failure retains encrypted
   memory recovery and an unload warning; encryption failure locks anyway and reports the loss.
   Manual lock/logout still ask before discarding unsaved edits. Forget removes this tab's copy.
   ponytail: closing a tab without restoring it loses the reference to its encrypted checkpoint;
