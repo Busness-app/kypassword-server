@@ -1,7 +1,9 @@
 **Repo:** kypassword-server
+**PR:** #25 — https://github.com/Busness-app/kypassword-server/pull/25
+**PR:** #26 — https://github.com/Busness-app/kypassword-server/pull/26
 **PR:** #24 — https://github.com/Busness-app/kypassword-server/pull/24 (Phase A merged)
 **PR:** #23 — https://github.com/Busness-app/kypassword-server/pull/23 (original plan merged)
-**Worktree:** /home/yoshi/busness.app/kypassword-server (branch plan/myslop-289-phase-b)
+**Worktree:** /home/yoshi/busness.app/kypassword-server (branch feat/verified-directory-auth)
 
 # Post 289 implementation plan: recoveryclient, then authentication
 
@@ -221,9 +223,53 @@ using synthetic shares. Real custodian-card restoration is a separate operator e
 shares go locally through stdin, never chat, argv or shared notes. No prior KySignOn deposit
 proves this product's migration or restore.
 
-## Planning completion
+## Planning completion (historical)
 
 Code and released library interfaces were inspected; no application implementation, tests,
 PR creation or deployment was performed in this planning turn. The next task is PR B step 1.
 The MySlop claim remains with marigold for continuity; claim ownership does not mean an
 implementation process is running in the background.
+
+
+## Implementation follow-up — 2026-09-05
+
+The plan has now been implemented in two ready PRs:
+
+- PR #25: https://github.com/Busness-app/kypassword-server/pull/25
+  (`feat/recoveryclient`, code head `115d6048cf0fa2c5766cfd7307000731dca1d9d1`).
+  recoveryclient v0.5.1 owns pairing/deposit/sealing and recovery orchestration;
+  the adapter preserves the existing disk schema, direct AES-GCM token wrapping,
+  key paths and explicit settings presence. Local backups, retention, schedules,
+  pin/unpair UI, partial-result reporting, drill validation and the private-material
+  guard are implemented. Genuine old-code pairing and v0.4.1 capsule fixtures prove
+  restart and restore compatibility with synthetic data.
+- PR #26: https://github.com/Busness-app/kypassword-server/pull/26
+  (`feat/verified-directory-auth`, combined code head
+  `29cb1de08dee737cfdb4bd538687384f4848228f`).
+  Signed sync requires syncauth verification, preserves retries after failed mutations,
+  and prevents completed-event reuse with changed payloads. OIDC uses PKCE, single-use
+  server-side state, nonce and JWKS signature/issuer/audience verification before any
+  account mutation. A real KySignOn-emitted SCIM fixture and TLS/JWKS integration tests
+  cover the cross-product boundary and invalid tokens.
+
+Full local verification passed: formatting, vet, race tests, daemon and Docker builds,
+frontend tests/build, govulncheck and npm audit; compose configuration was validated.
+After the final settings/capsule additions, full backend race tests, vet and daemon build
+passed again on both code heads above. CI passed all four jobs before those final
+additions; current-head CI and security-review clearance must be checked on GitHub.
+
+The ready PRs have received no autonomous security-review comment after repeated ticks;
+Copilot separately reported its quota exhausted. Neither is a security clearance.
+The pull-request skill requires asking the operator after two ticks with no reviewer.
+Operator action: restore the autonomous reviewer for this repo or designate a replacement
+review process. Do not call the PRs cleared without a verdict for the current head.
+
+Merge #25 first, then retarget #26 to master and recheck its gates. No merge or live
+rollout has been performed. The live proof above remains: preserve deployment state and
+pairing, verify a deposit without re-pairing, then record deployed SHA and capsule receipt.
+Real recovery shares must stay out of chat, arguments and board notes.
+
+Remaining limitations: sync completion receipts are bounded and in-memory (restart clears
+them); the extra documentation-address URL restriction applies to literals, while DNS
+resolution follows the library policy. Restore fixtures use disposable vault placeholder
+bytes and prove ciphertext preservation, not a real client vault unlock.
