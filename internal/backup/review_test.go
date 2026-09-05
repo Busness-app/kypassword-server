@@ -2,8 +2,10 @@ package backup
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Busness-app/ky-primitives/recoveryclient"
@@ -62,5 +64,18 @@ func TestRecoveryAddressPolicyDelegatesToLibrary(t *testing.T) {
 				t.Fatalf("policy diverged: %s private=%t: %v / %v", host, private, got, want)
 			}
 		}
+	}
+}
+
+func TestOutcomePreservesConfirmedDepositWithoutLocalReceipt(t *testing.T) {
+	result := recoveryclient.Result{Receipt: &recoveryclient.Receipt{CapsuleID: "c"}}
+	err := fmt.Errorf("%w: c", recoveryclient.ErrReceiptUnrecorded)
+	action, details := Outcome(result, err)
+	if action != "backup.deposited" || !strings.Contains(details, `"receipt_unrecorded"`) {
+		t.Fatalf("confirmed deposit lost: %s %s", action, details)
+	}
+	result.LocalError = "local destination failed"
+	if action, _ := Outcome(result, err); action != "backup.deposit_failed" {
+		t.Fatalf("failed destination hidden: %s", action)
 	}
 }

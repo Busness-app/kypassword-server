@@ -173,7 +173,7 @@ func (s *Service) Wait() { s.mu.Lock(); s.mu.Unlock() }
 func Outcome(r recoveryclient.Result, err error) (string, string) {
 	_, outcome, details := recoveryclient.Outcome(r, err)
 	action := "backup.deposited"
-	if err != nil || r.LocalError != "" {
+	if (err != nil && !errors.Is(err, recoveryclient.ErrReceiptUnrecorded)) || r.LocalError != "" {
 		action = "backup.deposit_failed"
 	}
 	details["outcome"] = outcome
