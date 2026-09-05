@@ -140,7 +140,7 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
   };
 
   return (
-    <div style={{ maxWidth: "800px", margin: "2rem auto", padding: "0 1rem" }}>
+    <div className="settings-page" style={{ maxWidth: "800px" }}>
       <div style={{ marginBottom: "2rem" }}>
         <h2>Security & Key Management</h2>
         <p style={{ color: "var(--ink-muted)" }}>

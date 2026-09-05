@@ -131,6 +131,9 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
 
 ## Child DOX Index
 
+- `frontend/src/styles/styles.css`: `.settings-page` provides the bounded scroll area for
+  Admin and Security within the fixed-height app shell; keep long backup forms reachable.
+
 - `internal/backup/AGENTS.md`: owns the recoveryclient settings/sealer adapter, file-store
   collection, product restore validation, and backup integration. Vault validation is ciphertext/checksum-only;
   only drills and restores may hold private recovery material.
@@ -182,6 +185,10 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
     bytesToHex(vaultKey)))`), and it is the only form a human can type into KeePassXC. A
     binary-keyed vault has no offline recovery path at all — the file opens with nothing a
     person can enter.
+    Legacy web vaults still require binary-key reads: `open` tries hexadecimal first and
+    falls back only on `InvalidKey`. A legacy load uses hexadecimal credentials for the next
+    explicit save/export, without uploading or changing the original snapshot on unlock.
+    Keep the legacy open/export regression test alongside the new-vault checks.
   - **Argon2d with kotpass's `Ver4x.create()` parameters**: m=32 MiB, t=8, p=2, set explicitly
     because kdbxweb's Argon2 defaults are far weaker (1 MiB, t=2, p=1).
 

@@ -111,7 +111,7 @@ export function AdminPanel() {
   };
 
   return (
-    <div style={{ maxWidth: "1000px", margin: "2rem auto", padding: "0 1rem" }}>
+    <div className="settings-page" style={{ maxWidth: "1000px" }}>
       <div style={{ marginBottom: "2rem" }}>
         <h2>System Administration</h2>
         <p style={{ color: "var(--ink-muted)" }}>
@@ -119,7 +119,7 @@ export function AdminPanel() {
         </p>
       </div>
 
-      <div style={{ display: "flex", gap: "0.5rem", borderBottom: "1px solid var(--line)", marginBottom: "2rem" }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", borderBottom: "1px solid var(--line)", marginBottom: "2rem" }}>
         <button
           className={`nav-link-btn ${activeTab === "sso" ? "active" : ""}`}
           onClick={() => setActiveTab("sso")}

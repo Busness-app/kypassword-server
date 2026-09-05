@@ -82,6 +82,15 @@ code, pre, .font-mono {
   overflow: hidden;
 }
 
+.settings-page {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  margin: 0 auto;
+  padding: 2rem 1rem;
+  overflow-y: auto;
+}
+
 /* Header Navbar */
 .app-nav {
   display: flex;
