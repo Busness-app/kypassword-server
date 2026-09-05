@@ -3,9 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -232,73 +230,15 @@ func TestDevicePairingFlow(t *testing.T) {
 
 func TestSSOCallbackAutoProvisions(t *testing.T) {
 	srv := newTestServer(t)
-	handler := srv.Routes()
-
-	// Mock OIDC IdP
-	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/.well-known/openid-configuration":
-			_ = json.NewEncoder(w).Encode(map[string]string{
-				"issuer":                 "http://" + r.Host,
-				"authorization_endpoint": "http://" + r.Host + "/oauth/authorize",
-				"token_endpoint":         "http://" + r.Host + "/oauth/token",
-				"userinfo_endpoint":      "http://" + r.Host + "/oauth/userinfo",
-			})
-		case "/oauth/token":
-			payload := map[string]any{
-				"sub":                "kysignon-sub-999",
-				"email":              "dave@urlxl.com",
-				"preferred_username": "dave",
-				"role":               "admin",
-			}
-			payloadBytes, _ := json.Marshal(payload)
-			idToken := "header." + base64.RawURLEncoding.EncodeToString(payloadBytes) + ".sig"
-
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"access_token": "mock-token",
-				"id_token":     idToken,
-				"token_type":   "Bearer",
-				"expires_in":   3600,
-			})
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer idp.Close()
-
-	_ = srv.ssoStore.Save(sso.SSOSettings{
-		Enabled:       true,
-		IssuerURL:     idp.URL,
-		ClientID:      "kypassword-app",
-		AutoProvision: true,
-	})
-
-	// 1. SSO Login redirect
-	req := httptest.NewRequest(http.MethodGet, "/api/auth/oidc/login", nil)
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
+	idp := mockIdP(t, map[string]any{"sub": "kysignon-sub-999", "email": "dave@urlxl.com", "preferred_username": "dave", "role": "admin"})
+	srv.oidcHTTP = idp.Client()
+	if err := srv.ssoStore.Save(sso.SSOSettings{Enabled: true, IssuerURL: idp.URL, ClientID: "kypassword-app", AutoProvision: true}); err != nil {
+		t.Fatal(err)
+	}
+	rec := driveSSOCallback(t, srv)
 	if rec.Code != http.StatusFound {
-		t.Fatalf("GET /api/auth/oidc/login status = %d, want 302", rec.Code)
+		t.Fatalf("callback = %d: %s", rec.Code, rec.Body.String())
 	}
-
-	var stateCookie *http.Cookie
-	for _, c := range rec.Result().Cookies() {
-		if c.Name == ssoCookieName {
-			stateCookie = c
-		}
-	}
-	state := stateCookie.Value[:32]
-
-	// 2. SSO Callback
-	req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/auth/oidc/callback?code=mock_code&state=%s", state), nil)
-	req.AddCookie(stateCookie)
-	rec = httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusFound {
-		t.Fatalf("GET /api/auth/oidc/callback status = %d, want 302", rec.Code)
-	}
-
 	// Verify Dave was auto-provisioned
 	dave, err := srv.users.GetBySSOSub("kysignon-sub-999")
 	if err != nil || dave.Username != "dave" || dave.Role != users.RoleAdmin {

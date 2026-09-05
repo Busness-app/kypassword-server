@@ -1,8 +1,8 @@
 package api
 
 import (
-	"crypto/subtle"
 	"errors"
+	"github.com/Busness-app/ky-primitives/syncauth"
 	"io"
 	"net/http"
 	"strconv"
@@ -67,57 +67,19 @@ func (s *Server) provisionFromSCIM(u kysync.SCIMUser) (users.User, error) {
 	return created, nil
 }
 
-// handleSyncWebhook receives account replication from KySignOn.
-//
-// The wire format is KySignOn's, not ours: a bare SCIM 2.0 User resource, the event in
-// X-KySignOn-Event-Type, and an HMAC over `timestamp + "." + body` in X-KySignOn-Signature.
-// See AGENTS.md. This handler previously expected a format nobody sent, so it matched no
-// event and returned 200 while doing nothing. An unrecognised event is now a 400.
+// handleSyncWebhook applies a bare SCIM resource only after syncauth verified the event.
 func (s *Server) handleSyncWebhook(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<18))
+	verified, ok := syncauth.EventFromContext(r)
+	if !ok {
+		http.Error(w, "unverified sync event", http.StatusUnauthorized)
+		return
+	}
+	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, "failed to read body", http.StatusBadRequest)
 		return
 	}
-
-	secrets := s.syncSecrets()
-	signature := kysync.Signature(r)
-
-	authorized, unsigned := false, false
-	if signature != "" {
-		timestamp := kysync.Timestamp(r)
-		for _, secret := range secrets {
-			if kysync.VerifySignature(secret, timestamp, body, signature) == nil {
-				authorized = true
-				break
-			}
-		}
-	} else {
-		// No signature header at all means a paired system from before signing. Accept the
-		// bearer token so an existing deployment keeps replicating, and record that it
-		// arrived unsigned. A signature that is present but wrong is always a rejection.
-		auth := []byte(r.Header.Get("Authorization"))
-		for _, secret := range secrets {
-			if subtle.ConstantTimeCompare(auth, []byte("Bearer "+secret)) == 1 {
-				authorized, unsigned = true, true
-				break
-			}
-		}
-	}
-
-	if !authorized {
-		// Within the source's audit budget: this record is written before any
-		// credential has been shown, so an anonymous flood must not be able to
-		// spend the server's fsyncs one rejection at a time. See audit_budget.go.
-		s.recordAnonymousRejection(r, "sync.rejected", clientIP(r), "replication request failed authentication")
-		http.Error(w, "unauthorized sync request", http.StatusUnauthorized)
-		return
-	}
-	if unsigned {
-		s.record(r, "sync.unsigned", "", "", clientIP(r), "replication request accepted on bearer token with no signature")
-	}
-
-	event := kysync.EventType(r)
+	event := verified.Type
 	switch event {
 	case "user.created", "user.updated", "user.deleted":
 	default:
