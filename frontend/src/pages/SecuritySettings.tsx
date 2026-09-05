@@ -4,6 +4,8 @@ import { wrapVaultKey, bytesToHex } from "../lib/vaultCrypto";
 import { KeyRound, Shield, FileText, Smartphone, Trash2, CheckCircle2, QrCode, Download } from "lucide-react";
 import { DevicePairingModal } from "../components/DevicePairingModal";
 
+import { AUTO_LOCK_MINUTES, parseAutoLockMinutes, type AutoLockMinutes } from "../lib/autoLock";
+
 type Device = {
   id: string;
   name: string;
@@ -16,10 +18,12 @@ type Props = {
   user: any;
   vaultKey: Uint8Array;
   onUserUpdated: () => void;
+  autoLockMinutes: AutoLockMinutes;
+  onAutoLockChange: (minutes: AutoLockMinutes) => void;
   onForgetDevice?: () => void;
 };
 
-export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice }: Props) {
+export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice, autoLockMinutes, onAutoLockChange }: Props) {
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [devices, setDevices] = useState<Device[]>([]);
@@ -143,6 +147,16 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
     <div className="settings-page" style={{ maxWidth: "800px" }}>
       <div style={{ marginBottom: "2rem" }}>
         <h2>Security & Key Management</h2>
+      <section className="card" style={{ marginTop: "1.5rem", marginBottom: "1.5rem", padding: "1.5rem" }}>
+        <h3>Automatic vault lock</h3>
+        <p>Lock after inactivity, including time while this tab or computer is asleep. Unsaved vault edits are kept in an encrypted local recovery copy.</p>
+        <label className="input-label" htmlFor="auto-lock">Lock after</label>
+        <select id="auto-lock" className="input" value={autoLockMinutes} onChange={event => onAutoLockChange(parseAutoLockMinutes(event.target.value))}>
+          {AUTO_LOCK_MINUTES.map(minutes => <option key={minutes} value={minutes}>{minutes} minute{minutes === 1 ? "" : "s"}</option>)}
+        </select>
+        <p>Applies to this browser. Unlock with your master password or paper recovery key after locking.</p>
+      </section>
+
         <p style={{ color: "var(--ink-muted)" }}>
           Manage your zero-knowledge key custody, master password, paper recovery, and paired devices.
         </p>

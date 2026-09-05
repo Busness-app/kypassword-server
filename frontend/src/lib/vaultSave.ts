@@ -43,12 +43,18 @@ export class VaultSaveQueue {
 
   // Downloads and uploads share the same mutable KDBX serializer.
   exportBinary = (): Promise<ArrayBuffer> => {
+    const vault = this.vault;
     const result = this.exporting.then(() => {
-      if (!this.vault) throw new Error("Vault is locked.");
-      return this.vault.exportBinary();
+      if (!vault) throw new Error("Vault is locked.");
+      return vault.exportBinary();
     });
     this.exporting = result.catch(() => {});
     return result;
+  };
+
+  recoverUnsaved = (): void => {
+    this.revision++;
+    this.publish({ kind: "error", version: this.state.version, message: "Recovered unsaved edits. Review and retry saving, or download this copy before reloading." });
   };
 
   getSnapshot = (): SaveState => this.state;

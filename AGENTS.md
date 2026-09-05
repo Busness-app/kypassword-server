@@ -160,6 +160,29 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
 
 ## Child DOX Index
 
+- `frontend/src/lib/autoLock.ts` and `App.tsx`: per-tab vault idle locking defaults to five
+  minutes; Security offers 1/5/15/30/60 minutes saved per browser. Check both wall and
+  monotonic elapsed time before accepting activity, including focus/visibility resume.
+  Lock invalidates pending unlocks and discards the save queue. A session-storage lock
+  marker prevents refreshing the locked tab from using its trusted key. Mirror activity and
+  lock markers in localStorage so a new tab after closure/browser restart also expires the
+  cached key; missing or invalid activity requires a password. Automatic lock
+  also removes that cached device key. Other already-unlocked tabs keep their own timers.
+- `frontend/src/lib/lockedDraft.ts`: automatic lock checkpoints applied unsaved vault changes
+  and unapplied entry fields, AES-GCM encrypted with the vault key and account-bound AAD.
+  A separate IndexedDB database preserves the existing key-store version for older clients.
+  Each lock allocates a fresh checkpoint ID so duplicated tabs cannot overwrite each other.
+  Ordinary unlock does not open recovery storage unless this account has a checkpoint reference.
+  Copies belong to a tab/account, survive refresh, and are consumed after successful
+  decryption on unlock. Restore uses the original server version and requires explicit retry
+  for unsaved changes, preserving conflict protection. Recovery read failures open the server
+  copy with a notice and retain the unread reference; cleanup failures also surface a notice.
+  Cache-key write failure does not block password unlock. Storage failure retains encrypted
+  memory recovery and an unload warning; encryption failure locks anyway and reports the loss.
+  Manual lock/logout still ask before discarding unsaved edits. Forget removes this tab's copy.
+  ponytail: closing a tab without restoring it loses the reference to its encrypted checkpoint;
+  a cross-tab recovery inventory and retention policy are future work. No offline login/unlock.
+
 - `frontend/src/lib/vaultSave.ts`: owns one automatic save queue per unlocked vault.
   Applied edits, entry/folder creation, deletion, and CSV import enqueue saves after 1.5 seconds
   of idle time. Explicit retry flushes immediately. Serialize
@@ -171,7 +194,7 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   edits; saving cannot refuse those actions. Closing/replacing the queue cancels its timer,
   aborts transport and prevents later revisions uploading. An already accepted request cannot
   be undone. Logout clears the visible vault before network I/O; forgetting starts key removal
-  independently of logout. Draft fields require Apply Edits; they stay in memory only.
+  independently of logout. Draft fields require Apply Edits; automatic locking preserves them in the encrypted local checkpoint.
   `vaultSave.test.ts` checks encrypted round trips, debounce, cancellation, failures, and retry.
 
 - `frontend/src/styles/styles.css`: `.settings-page` provides the bounded scroll area for

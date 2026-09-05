@@ -1,6 +1,8 @@
-import React, { useState, useEffect, useSyncExternalStore } from "react";
+import React, { useState, useEffect, useSyncExternalStore, useRef, useCallback } from "react";
 import { getJSON, postJSON, putJSON, toErrorMessage } from "./lib/api";
 import { VaultSaveQueue, uploadVault, canDiscardVault, type SaveState } from "./lib/vaultSave";
+import { IdleDeadline, cachedKeyExpired, loadAutoLockMinutes, storeAutoLockMinutes, type AutoLockMinutes } from "./lib/autoLock";
+import { sealDraft, openDraft, draftStore, readDraft, removeDraft, type EntryDraft, type LockedDraft } from "./lib/lockedDraft";
 import { KeePassVault } from "./lib/kdbx";
 import {
   generateVaultMasterKey,
@@ -51,7 +53,19 @@ export function App() {
   const [saveQueue, setSaveQueue] = useState<VaultSaveQueue | null>(null);
   const saveState = useSyncExternalStore(saveQueue?.subscribe ?? noSubscribe, saveQueue?.getSnapshot ?? idleSnapshot);
   const [hasDraft, setHasDraft] = useState(false);
-  const unsaved = hasDraft || saveState.kind !== "saved";
+  const draft = useRef<EntryDraft | null>(null);
+  const [initialDraft, setInitialDraft] = useState<EntryDraft | null>(null);
+  const onDraftChange = useCallback((value: EntryDraft | null) => { draft.current = value; setHasDraft(value !== null); }, []);
+  const [autoLockMinutes, setAutoLockMinutes] = useState(loadAutoLockMinutes);
+  const unlockGeneration = useRef(0);
+  const checkpoint = useRef<Promise<void>>(Promise.resolve());
+  const memoryDraft = useRef<LockedDraft | undefined>(undefined);
+  const [lockNotice, setLockNotice] = useState("");
+  const recoveryId = (u: User): string | undefined => {
+    try { return sessionStorage.getItem(`kypassword.draft:${u.id}`) ?? undefined; } catch { return undefined; }
+  };
+  const [recoveryPending, setRecoveryPending] = useState(false);
+  const unsaved = recoveryPending || hasDraft || saveState.kind !== "saved";
 
   useEffect(() => {
     if (!unsaved) return;
@@ -103,8 +117,14 @@ export function App() {
   }, []);
 
   const initVault = async (u: User, masterPassword?: string) => {
+    const generation = ++unlockGeneration.current;
+    const current = () => generation === unlockGeneration.current;
+    const notices: string[] = [];
     try {
+      await checkpoint.current;
+      if (!current()) return;
       const meta = await getJSON<VaultMetadata>("/api/vault/metadata");
+      if (!current()) return;
 
       // Case 1: Brand new vault (version 0)
       if (!meta.version || meta.version === 0) {
@@ -122,10 +142,14 @@ export function App() {
         const pwEnvelope = await wrapVaultKey(key, masterPassword);
 
         const version = await uploadVault(binary, 0, pwEnvelope);
+        if (!current()) return;
+        await storeDeviceVaultKey(u.username, bytesToHex(key)).catch(() => { notices.push("Could not cache the device key; you may need your master password again."); });
+        if (!current()) { await clearDeviceVaultKey(u.username).catch(() => {}); return; }
+        try { sessionStorage.removeItem(`kypassword.locked:${u.id}`); localStorage.removeItem(`kypassword.locked:${u.id}`); } catch {}
         setSaveQueue(new VaultSaveQueue(newVault, version));
         setVaultKey(key);
         setVault(newVault);
-        await storeDeviceVaultKey(u.username, bytesToHex(key));
+        setLockNotice(notices.join(" "));
         setShowUnlockModal(false);
         return;
       }
@@ -140,8 +164,17 @@ export function App() {
         } else {
           throw new Error("No key envelopes found on server metadata");
         }
-        await storeDeviceVaultKey(u.username, bytesToHex(key));
       } else {
+        // The trusted-key deadline survives refreshing or closing every tab.
+        try {
+          const last = sessionStorage.getItem(`kypassword.activity:${u.id}`) ?? localStorage.getItem(`kypassword.activity:${u.id}`);
+          if (sessionStorage.getItem(`kypassword.locked:${u.id}`) || localStorage.getItem(`kypassword.locked:${u.id}`) ||
+              cachedKeyExpired(last, autoLockMinutes * 60000)) {
+            setShowUnlockModal(true);
+            await clearDeviceVaultKey(u.username).catch(() => {});
+            return;
+          }
+        } catch { setShowUnlockModal(true); return; }
         // Check for cached key on this trusted device
         const cachedHex = await getDeviceVaultKey(u.username).catch(() => undefined);
         if (cachedHex) {
@@ -152,7 +185,7 @@ export function App() {
         }
       }
 
-      setVaultKey(key);
+      if (!current()) return;
 
       // Download encrypted KDBX
       const kdbxRes = await fetch("/api/vault/kdbx", { credentials: "same-origin" });
@@ -160,11 +193,48 @@ export function App() {
       const kdbxBytes = await kdbxRes.arrayBuffer();
 
       // Open zero-knowledge vault client-side
-      const loadedVault = await KeePassVault.open(kdbxBytes, key);
-      setSaveQueue(new VaultSaveQueue(loadedVault, meta.version));
+      const id = recoveryId(u);
+      const local = memoryDraft.current ? { kind: "available", draft: memoryDraft.current } : await readDraft(id);
+      const stored = "draft" in local ? local.draft : undefined;
+      if (local.kind === "unavailable") notices.push("Opened the server copy. Could not read the local recovery copy; retry unlocking when browser storage is available to recover local edits.");
+      const recovered = stored ? await openDraft(stored, key, u.id) : undefined;
+      const loadedVault = await KeePassVault.open(recovered?.binary ?? kdbxBytes, key);
+      if (!current()) return;
+      if (!masterPassword) {
+        try {
+          const last = sessionStorage.getItem(`kypassword.activity:${u.id}`) ?? localStorage.getItem(`kypassword.activity:${u.id}`);
+          if (localStorage.getItem(`kypassword.locked:${u.id}`) || cachedKeyExpired(last, autoLockMinutes * 60000)) {
+            setShowUnlockModal(true);
+            await clearDeviceVaultKey(u.username).catch(() => {});
+            return;
+          }
+        } catch { setShowUnlockModal(true); return; }
+      }
+      if (masterPassword) {
+        await storeDeviceVaultKey(u.username, bytesToHex(key)).catch(() => { notices.push("Could not cache the device key; you may need your master password again."); });
+        if (!current()) { await clearDeviceVaultKey(u.username).catch(() => {}); return; }
+      }
+      if (stored) {
+        memoryDraft.current = stored;
+        setRecoveryPending(true);
+        if (!await removeDraft(id)) notices.push("Recovered local edits, but could not remove the old encrypted recovery copy from browser storage.");
+      }
+      if (local.kind === "available") { try { sessionStorage.removeItem(`kypassword.draft:${u.id}`); } catch {} }
+      if (!current()) return;
+      memoryDraft.current = undefined;
+      setRecoveryPending(local.kind === "unavailable");
+      const queue = new VaultSaveQueue(loadedVault, recovered?.metadata.version ?? meta.version);
+      if (recovered?.metadata.dirty) queue.recoverUnsaved();
+      setInitialDraft(recovered?.metadata.entry ?? null);
+      setSaveQueue(queue);
+      setVaultKey(key);
       setVault(loadedVault);
+      if (recovered) notices.unshift("Recovered local edits. Review them before saving.");
+      setLockNotice(notices.join(" "));
+      if (masterPassword) { try { sessionStorage.removeItem(`kypassword.locked:${u.id}`); localStorage.removeItem(`kypassword.locked:${u.id}`); } catch {} }
       setShowUnlockModal(false);
     } catch (err) {
+      if (!current()) return;
       console.error("Vault init error:", err);
       setUnlockError(toErrorMessage(err, "Failed to unlock vault"));
       setShowUnlockModal(true);
@@ -200,7 +270,14 @@ export function App() {
   };
 
   const closeVault = () => {
+    unlockGeneration.current++;
+    if (user) {
+      try { sessionStorage.setItem(`kypassword.locked:${user.id}`, "1"); } catch {}
+      try { localStorage.setItem(`kypassword.locked:${user.id}`, "1"); } catch {}
+    }
     saveQueue?.discard();
+    draft.current = null;
+    setInitialDraft(null);
     setSaveQueue(null);
     setHasDraft(false);
     setVault(null);
@@ -208,6 +285,79 @@ export function App() {
     setUnlockPassword("");
     setShowUnlockModal(false);
     setShowHistoryModal(false);
+  };
+
+  const autoLock = useRef(() => {});
+  autoLock.current = () => {
+    if (!vault || !vaultKey || !saveQueue || !user) return;
+    const u = user;
+    const key = vaultKey;
+    const metadata = { version: saveQueue.getSnapshot().version, dirty: saveQueue.getSnapshot().kind !== "saved", entry: draft.current };
+    const binary = metadata.dirty || metadata.entry ? saveQueue.exportBinary() : null;
+    // Duplicating a browser tab copies sessionStorage. Allocate on each lock so those
+    // tabs cannot overwrite one another's subsequent recovery snapshots.
+    const id = `${u.id}:${crypto.randomUUID()}`;
+    let durableReference = true;
+    if (binary) {
+      try { sessionStorage.setItem(`kypassword.draft:${u.id}`, id); }
+      catch { durableReference = false; }
+    }
+    // Capture the serializer before discarding; no subsequent network save can run.
+    autoLock.current = () => {};
+    setRecoveryPending(!!binary);
+    closeVault();
+    setLockNotice(binary ? "Vault locked. Securing your unsaved edits…" : "Vault locked after inactivity.");
+    const removeCachedKey = clearDeviceVaultKey(u.username).catch(() => { setLockNotice("Vault locked. Could not remove the cached device key; keep this tab locked until browser storage is available."); });
+    checkpoint.current = (async () => {
+      try {
+        if (binary) {
+          memoryDraft.current = await sealDraft(await binary, metadata, key, u.id);
+          await draftStore(id, "put", memoryDraft.current);
+          setRecoveryPending(!durableReference);
+          setLockNotice(durableReference
+            ? "Vault locked. Your unsaved edits are encrypted on this device; unlock this tab to recover them."
+            : "Vault locked. Keep this tab open and unlock to recover your edits; the browser could not save the recovery reference.");
+        } else {
+          memoryDraft.current = undefined;
+        }
+      } catch {
+        setLockNotice(memoryDraft.current
+          ? "Vault locked. Recovery storage failed; keep this tab open and unlock to recover your edits."
+          : "Vault locked, but the recovery copy failed. Unsaved edits could not be preserved.");
+      } finally { await removeCachedKey; }
+    })();
+  };
+
+  useEffect(() => {
+    if (!vault || !user) return;
+    const deadline = new IdleDeadline(autoLockMinutes * 60000);
+    const record = () => {
+      const now = String(Date.now());
+      try { sessionStorage.setItem(`kypassword.activity:${user.id}`, now); } catch {}
+      try { localStorage.setItem(`kypassword.activity:${user.id}`, now); } catch {}
+    };
+    record();
+    const check = () => { if (deadline.expired()) autoLock.current(); };
+    const activity = (event: Event) => {
+      if (deadline.activity()) record();
+      else { event.preventDefault(); event.stopImmediatePropagation(); autoLock.current(); }
+    };
+    const events = ["pointerdown", "pointermove", "keydown", "wheel", "touchstart"] as const;
+    events.forEach(event => window.addEventListener(event, activity, { capture: true }));
+    window.addEventListener("focus", check);
+    document.addEventListener("visibilitychange", check);
+    const timer = window.setInterval(check, 1000);
+    return () => {
+      clearInterval(timer);
+      events.forEach(event => window.removeEventListener(event, activity, true));
+      window.removeEventListener("focus", check);
+      document.removeEventListener("visibilitychange", check);
+    };
+  }, [vault, user?.id, autoLockMinutes]);
+
+  const changeAutoLock = (minutes: AutoLockMinutes) => {
+    setAutoLockMinutes(minutes);
+    try { storeAutoLockMinutes(minutes); } catch { alert("The timeout applies to this tab, but browser storage could not save the preference."); }
   };
 
   const logout = async () => {
@@ -229,10 +379,17 @@ export function App() {
     // Neither storage failure nor a stalled logout may prevent the other action starting.
     const results = await Promise.allSettled([
       username ? clearDeviceVaultKey(username) : Promise.resolve(),
+      checkpoint.current.then(async () => {
+        memoryDraft.current = undefined;
+        const id = user ? recoveryId(user) : undefined;
+        if (id) await draftStore(id, "delete");
+        if (user) { try { sessionStorage.removeItem(`kypassword.draft:${user.id}`); } catch {} }
+      }),
       logout(),
     ]);
     if (results[0].status === "rejected") alert("Could not forget this device. Clear this site's browser data to remove its saved vault key.");
-    if (results[1].status === "rejected") alert("Vault locked locally, but server logout failed.");
+    if (results[1].status === "rejected") alert("Could not remove the local recovery copy. Clear this site’s browser data.");
+    if (results[2].status === "rejected") alert("Vault locked locally, but server logout failed.");
   };
 
   const handleLockVault = () => {
@@ -298,6 +455,8 @@ export function App() {
         </div>
       </header>
 
+      {lockNotice ? <p role="status" style={{ padding: "0.75rem", margin: 0 }}>{lockNotice}</p> : null}
+
       {/* Keep the editor mounted across tabs so drafts and save status survive navigation. */}
       {vault && saveQueue ? (
         <VaultPage
@@ -306,7 +465,8 @@ export function App() {
           saveState={saveState}
           onChanged={saveQueue.changed}
           onSave={saveQueue.save}
-          onDraftChange={setHasDraft}
+          onDraftChange={onDraftChange}
+          initialDraft={initialDraft}
           hidden={navTab !== "vault"}
           onExport={handleExportKdbx}
           onReload={() => initVault(user)}
@@ -318,6 +478,8 @@ export function App() {
         navTab === "security" ? <SecuritySettings
           user={user}
           vaultKey={vaultKey!}
+          autoLockMinutes={autoLockMinutes}
+          onAutoLockChange={changeAutoLock}
           onUserUpdated={() => { if (confirmDiscardVault()) void checkAuth(); }}
           onForgetDevice={handleForgetDevice}
         /> : null
