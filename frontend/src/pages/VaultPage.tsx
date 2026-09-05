@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { KeePassVault, VaultEntry, VaultGroup } from "../lib/kdbx";
+import type { SaveState } from "../lib/vaultSave";
 import { generateTOTP } from "../lib/totp";
 import { PasswordGenerator } from "../components/PasswordGenerator";
 import { DevicePairingModal } from "../components/DevicePairingModal";
@@ -30,12 +31,16 @@ import {
 type Props = {
   vault: KeePassVault;
   vaultVersion: number;
+  saveState: SaveState;
+  onChanged: () => void;
+  onDraftChange: (dirty: boolean) => void;
+  hidden: boolean;
   onSave: () => Promise<void>;
   onExport: () => void;
   onReload: () => Promise<void>;
 };
 
-export function VaultPage({ vault, vaultVersion, onSave, onExport, onReload }: Props) {
+export function VaultPage({ vault, vaultVersion, onSave, onExport, onReload, saveState, onChanged, onDraftChange, hidden }: Props) {
   const [groups, setGroups] = useState<VaultGroup[]>([]);
   const [selectedGroupUuid, setSelectedGroupUuid] = useState<string>("all");
   const [entries, setEntries] = useState<VaultEntry[]>([]);
@@ -60,8 +65,7 @@ export function VaultPage({ vault, vaultVersion, onSave, onExport, onReload }: P
   const [importMessage, setImportMessage] = useState<string | null>(null);
   const [revealPassword, setRevealPassword] = useState(false);
   const [copiedField, setCopiedField] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  const saving = saveState.kind === "saving";
 
   // TOTP live state
   const [totpCode, setTotpCode] = useState<string | null>(null);
@@ -85,8 +89,17 @@ export function VaultPage({ vault, vaultVersion, onSave, onExport, onReload }: P
     return entries.find((e) => e.uuid === selectedEntryUuid) || null;
   }, [entries, selectedEntryUuid]);
 
+  const draftDirty = isEditing && selectedEntry !== null && (
+    editTitle !== selectedEntry.title || editUsername !== selectedEntry.username ||
+    editPassword !== selectedEntry.password || editUrl !== selectedEntry.url ||
+    editNotes !== selectedEntry.notes || editTotp !== (selectedEntry.totpSeed || "") ||
+    editGroupUuid !== selectedEntry.groupUuid
+  );
+  useEffect(() => { onDraftChange(draftDirty); }, [draftDirty, onDraftChange]);
+  const canChangeEntry = () => !draftDirty || confirm("Discard unapplied entry edits?");
+
   // Load selected entry into editor
-  useEffect(() => {
+  const loadEditor = () => {
     if (selectedEntry) {
       setEditTitle(selectedEntry.title);
       setEditUsername(selectedEntry.username);
@@ -95,10 +108,10 @@ export function VaultPage({ vault, vaultVersion, onSave, onExport, onReload }: P
       setEditNotes(selectedEntry.notes);
       setEditTotp(selectedEntry.totpSeed || "");
       setEditGroupUuid(selectedEntry.groupUuid);
-      setIsEditing(false);
       setRevealPassword(false);
     }
-  }, [selectedEntry]);
+  };
+  useEffect(loadEditor, [vault, selectedEntry?.uuid]);
 
   // Live TOTP ticker
   useEffect(() => {
@@ -144,12 +157,13 @@ export function VaultPage({ vault, vaultVersion, onSave, onExport, onReload }: P
       groupUuid: editGroupUuid,
       updatedAt: new Date(),
     });
-    setHasUnsavedChanges(true);
+    onChanged();
     setIsEditing(false);
     refreshVaultData();
   };
 
   const handleCreateNewEntry = () => {
+    if (!canChangeEntry()) return;
     const newEntry = vault.createEntry({
       title: "New Account",
       username: "",
@@ -158,7 +172,7 @@ export function VaultPage({ vault, vaultVersion, onSave, onExport, onReload }: P
       notes: "",
       groupUuid: selectedGroupUuid === "all" ? groups[0]?.uuid || "" : selectedGroupUuid,
     });
-    setHasUnsavedChanges(true);
+    onChanged();
     refreshVaultData();
     setSelectedEntryUuid(newEntry.uuid);
     setIsEditing(true);
@@ -167,7 +181,7 @@ export function VaultPage({ vault, vaultVersion, onSave, onExport, onReload }: P
   const handleDeleteEntry = () => {
     if (!selectedEntryUuid || !confirm("Are you sure you want to delete this entry?")) return;
     vault.deleteEntry(selectedEntryUuid);
-    setHasUnsavedChanges(true);
+    onChanged();
     setSelectedEntryUuid(null);
     refreshVaultData();
   };
@@ -176,20 +190,8 @@ export function VaultPage({ vault, vaultVersion, onSave, onExport, onReload }: P
     const name = prompt("Enter folder / group name:");
     if (!name) return;
     vault.createGroup(name.trim());
-    setHasUnsavedChanges(true);
+    onChanged();
     refreshVaultData();
-  };
-
-  const handleSaveToServer = async () => {
-    setSaving(true);
-    try {
-      await onSave();
-      setHasUnsavedChanges(false);
-    } catch (err: any) {
-      alert("Failed to save vault: " + (err?.message || String(err)));
-    } finally {
-      setSaving(false);
-    }
   };
 
   const filteredEntries = useMemo(() => {
@@ -208,7 +210,7 @@ export function VaultPage({ vault, vaultVersion, onSave, onExport, onReload }: P
   }, [entries, selectedGroupUuid, searchQuery]);
 
   return (
-    <div className="vault-layout">
+    <div className="vault-layout" style={hidden ? { display: "none" } : undefined}>
       {/* 1. Sidebar Folders */}
       <aside className="vault-sidebar">
         <div className="sidebar-header">
@@ -257,10 +259,10 @@ export function VaultPage({ vault, vaultVersion, onSave, onExport, onReload }: P
             <button className="btn btn-secondary btn-sm" onClick={() => setShowPairing(true)}>
               <QrCode size={14} /> Pair Extension / Mobile
             </button>
-            <button className="btn btn-secondary btn-sm" onClick={() => setShowHistory(true)}>
+            <button className="btn btn-secondary btn-sm" onClick={() => setShowHistory(true)} disabled={saveState.kind !== "saved" || draftDirty}>
               <History size={14} /> Version History (v{vaultVersion})
             </button>
-            <button className="btn btn-secondary btn-sm" onClick={onExport}>
+            <button className="btn btn-secondary btn-sm" onClick={onExport} disabled={saving}>
               <Download size={14} /> Download .kdbx
             </button>
           </div>
@@ -320,25 +322,15 @@ export function VaultPage({ vault, vaultVersion, onSave, onExport, onReload }: P
             </div>
           ) : null}
 
-          {hasUnsavedChanges ? (
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                background: "var(--accent-soft)",
-                border: "1px solid rgba(77, 238, 234, 0.3)",
-                padding: "0.5rem 0.75rem",
-                borderRadius: "6px",
-                fontSize: "0.8rem",
-              }}
-            >
-              <span style={{ color: "var(--accent)", fontWeight: 600 }}>Unsaved edits</span>
-              <button className="btn btn-primary btn-sm" onClick={handleSaveToServer} disabled={saving}>
-                <Save size={12} /> {saving ? "Saving…" : "Save Vault"}
-              </button>
-            </div>
-          ) : null}
+          <div role={saveState.kind === "error" ? "alert" : "status"} style={{ padding: "0.5rem", fontSize: "0.85rem" }}>
+            {saveState.kind === "error" ? (
+              <>
+                <p style={{ color: "var(--danger)" }}>Unsaved edits: {saveState.message}</p>
+                <button className="btn btn-primary btn-sm" onClick={() => void onSave()}>Retry Save</button>
+              </>
+            ) : <span>{saving ? "Saving…" : draftDirty ? "Applied changes saved" : "All changes saved"}</span>}
+            {draftDirty ? <p>Entry edits have not been applied.</p> : null}
+          </div>
         </div>
 
         <ul className="entry-list">
@@ -358,7 +350,7 @@ export function VaultPage({ vault, vaultVersion, onSave, onExport, onReload }: P
               <li
                 key={e.uuid}
                 className={`entry-item ${selectedEntryUuid === e.uuid ? "active" : ""}`}
-                onClick={() => setSelectedEntryUuid(e.uuid)}
+                onClick={() => { if (canChangeEntry()) { setIsEditing(false); setSelectedEntryUuid(e.uuid); } }}
               >
                 <div className="entry-title">
                   <span>{e.title || "Untitled"}</span>
@@ -387,7 +379,7 @@ export function VaultPage({ vault, vaultVersion, onSave, onExport, onReload }: P
               <div style={{ display: "flex", gap: "0.5rem" }}>
                 {isEditing ? (
                   <>
-                    <button className="btn btn-secondary" onClick={() => setIsEditing(false)}>
+                    <button className="btn btn-secondary" onClick={() => { loadEditor(); setIsEditing(false); }}>
                       Cancel
                     </button>
                     <button className="btn btn-primary" onClick={handleSaveEntry}>
@@ -642,13 +634,13 @@ export function VaultPage({ vault, vaultVersion, onSave, onExport, onReload }: P
           groups={groups}
           onClose={() => setShowCsvImport(false)}
           onImportComplete={(count, createdFolders) => {
-            setHasUnsavedChanges(true);
+            onChanged();
             refreshVaultData();
             const folderText =
               createdFolders.length > 0
                 ? ` (${createdFolders.length} folder${createdFolders.length === 1 ? "" : "s"} created)`
                 : "";
-            setImportMessage(`Successfully imported ${count} password${count === 1 ? "" : "s"}${folderText}. Click "Save Vault" to sync changes.`);
+            setImportMessage(`Successfully imported ${count} password${count === 1 ? "" : "s"}${folderText}. Changes are saved automatically.`);
           }}
         />
       ) : null}

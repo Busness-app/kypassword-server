@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useSyncExternalStore } from "react";
 import { getJSON, postJSON, putJSON, toErrorMessage } from "./lib/api";
+import { VaultSaveQueue, uploadVault, canDiscardVault, type SaveState } from "./lib/vaultSave";
 import { KeePassVault } from "./lib/kdbx";
 import {
   generateVaultMasterKey,
@@ -35,6 +36,10 @@ type VaultMetadata = {
   recoveryEnvelope?: string;
 };
 
+const idleSave: SaveState = { kind: "saved", version: 0 };
+const noSubscribe = () => () => {};
+const idleSnapshot = () => idleSave;
+
 export function App() {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
@@ -43,8 +48,23 @@ export function App() {
   // Vault state
   const [vault, setVault] = useState<KeePassVault | null>(null);
   const [vaultKey, setVaultKey] = useState<Uint8Array | null>(null);
-  const [vaultVersion, setVaultVersion] = useState<number>(0);
-  const [vaultMetadata, setVaultMetadata] = useState<VaultMetadata | null>(null);
+  const [saveQueue, setSaveQueue] = useState<VaultSaveQueue | null>(null);
+  const saveState = useSyncExternalStore(saveQueue?.subscribe ?? noSubscribe, saveQueue?.getSnapshot ?? idleSnapshot);
+  const [hasDraft, setHasDraft] = useState(false);
+  const unsaved = hasDraft || saveState.kind !== "saved";
+
+  useEffect(() => {
+    if (!unsaved) return;
+    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [unsaved]);
+
+  const confirmDiscardVault = () => canDiscardVault(saveState, hasDraft, () =>
+    confirm("Some edits are unsaved or still saving. Continue and discard unsaved edits? An upload already accepted by the server cannot be undone."));
+
+  // Replacing or closing a vault must never leave a timer/old upload able to save later.
+  useEffect(() => () => { saveQueue?.discard(); }, [saveQueue]);
 
   // SSO unlock modal state
   const [showUnlockModal, setShowUnlockModal] = useState(false);
@@ -64,9 +84,15 @@ export function App() {
         setUser(null);
         setVault(null);
         setVaultKey(null);
+        setSaveQueue(null);
+        setHasDraft(false);
       }
     } catch {
       setUser(null);
+      setVault(null);
+      setVaultKey(null);
+      setSaveQueue(null);
+      setHasDraft(false);
     } finally {
       setLoading(false);
     }
@@ -79,8 +105,6 @@ export function App() {
   const initVault = async (u: User, masterPassword?: string) => {
     try {
       const meta = await getJSON<VaultMetadata>("/api/vault/metadata");
-      setVaultMetadata(meta);
-      setVaultVersion(meta.version || 0);
 
       // Case 1: Brand new vault (version 0)
       if (!meta.version || meta.version === 0) {
@@ -90,29 +114,17 @@ export function App() {
         }
 
         const key = generateVaultMasterKey();
-        setVaultKey(key);
 
         const newVault = await KeePassVault.createNew(key, `${u.username}'s Vault`);
-        setVault(newVault);
 
         // Export and save initial version 1
         const binary = await newVault.exportBinary();
         const pwEnvelope = await wrapVaultKey(key, masterPassword);
 
-        const uploadRes = await fetch("/api/vault/upload", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/octet-stream",
-            "If-Match": "0",
-            "X-Password-Envelope": pwEnvelope,
-          },
-          body: binary,
-        });
-
-        if (uploadRes.ok) {
-          const upMeta = (await uploadRes.json()).metadata;
-          setVaultVersion(upMeta.version);
-        }
+        const version = await uploadVault(binary, 0, pwEnvelope);
+        setSaveQueue(new VaultSaveQueue(newVault, version));
+        setVaultKey(key);
+        setVault(newVault);
         await storeDeviceVaultKey(u.username, bytesToHex(key));
         setShowUnlockModal(false);
         return;
@@ -149,6 +161,7 @@ export function App() {
 
       // Open zero-knowledge vault client-side
       const loadedVault = await KeePassVault.open(kdbxBytes, key);
+      setSaveQueue(new VaultSaveQueue(loadedVault, meta.version));
       setVault(loadedVault);
       setShowUnlockModal(false);
     } catch (err) {
@@ -167,7 +180,6 @@ export function App() {
     try {
       await initVault(user, unlockPassword);
       setUnlockPassword("");
-      setShowUnlockModal(false);
     } catch (err) {
       setUnlockError(toErrorMessage(err, "Incorrect password or recovery key"));
     } finally {
@@ -175,34 +187,9 @@ export function App() {
     }
   };
 
-  const handleSaveVault = async () => {
-    if (!vault || !vaultKey) return;
-    const binary = await vault.exportBinary();
-
-    const uploadRes = await fetch("/api/vault/upload", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/octet-stream",
-        "If-Match": `"${vaultVersion}"`,
-      },
-      body: binary,
-    });
-
-    if (!uploadRes.ok) {
-      if (uploadRes.status === 409) {
-        alert("A newer version of your vault exists on the server. Your save has been preserved as a conflict.");
-        return;
-      }
-      throw new Error(await uploadRes.text());
-    }
-
-    const data = await uploadRes.json();
-    setVaultVersion(data.metadata.version);
-  };
-
   const handleExportKdbx = async () => {
-    if (!vault) return;
-    const binary = await vault.exportBinary();
+    if (!saveQueue || saveState.kind === "saving") return;
+    const binary = await saveQueue.exportBinary();
     const blob = new Blob([binary], { type: "application/x-keepass2" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -212,25 +199,45 @@ export function App() {
     URL.revokeObjectURL(url);
   };
 
-  const handleLogout = async () => {
-    try {
-      await postJSON("/api/auth/logout", {});
-    } catch {}
-    setUser(null);
+  const closeVault = () => {
+    saveQueue?.discard();
+    setSaveQueue(null);
+    setHasDraft(false);
     setVault(null);
     setVaultKey(null);
+    setUnlockPassword("");
+    setShowUnlockModal(false);
+    setShowHistoryModal(false);
+  };
+
+  const logout = async () => {
+    closeVault();
+    // Clear the visible vault before waiting on a possibly stalled network request.
+    await postJSON("/api/auth/logout", {});
+    setUser(null);
+  };
+
+  const handleLogout = async () => {
+    if (!confirmDiscardVault()) return;
+    try { await logout(); } catch { alert("Vault locked locally, but server logout failed. Retry signing out when the connection returns."); }
   };
 
   const handleForgetDevice = async () => {
-    if (user?.username) {
-      await clearDeviceVaultKey(user.username);
-    }
-    await handleLogout();
+    if (!confirmDiscardVault()) return;
+    const username = user?.username;
+    closeVault();
+    // Neither storage failure nor a stalled logout may prevent the other action starting.
+    const results = await Promise.allSettled([
+      username ? clearDeviceVaultKey(username) : Promise.resolve(),
+      logout(),
+    ]);
+    if (results[0].status === "rejected") alert("Could not forget this device. Clear this site's browser data to remove its saved vault key.");
+    if (results[1].status === "rejected") alert("Vault locked locally, but server logout failed.");
   };
 
   const handleLockVault = () => {
-    setVault(null);
-    setVaultKey(null);
+    if (!confirmDiscardVault()) return;
+    closeVault();
     setShowUnlockModal(true);
   };
 
@@ -291,26 +298,29 @@ export function App() {
         </div>
       </header>
 
-      {/* Main Content View */}
+      {/* Keep the editor mounted across tabs so drafts and save status survive navigation. */}
+      {vault && saveQueue ? (
+        <VaultPage
+          vault={vault}
+          vaultVersion={saveState.version}
+          saveState={saveState}
+          onChanged={saveQueue.changed}
+          onSave={saveQueue.save}
+          onDraftChange={setHasDraft}
+          hidden={navTab !== "vault"}
+          onExport={handleExportKdbx}
+          onReload={() => initVault(user)}
+        />
+      ) : null}
       {navTab === "admin" && user.role === "admin" ? (
         <AdminPanel />
       ) : vault ? (
-        navTab === "vault" ? (
-          <VaultPage
-            vault={vault}
-            vaultVersion={vaultVersion}
-            onSave={handleSaveVault}
-            onExport={handleExportKdbx}
-            onReload={() => initVault(user)}
-          />
-        ) : (
-          <SecuritySettings
-            user={user}
-            vaultKey={vaultKey!}
-            onUserUpdated={checkAuth}
-            onForgetDevice={handleForgetDevice}
-          />
-        )
+        navTab === "security" ? <SecuritySettings
+          user={user}
+          vaultKey={vaultKey!}
+          onUserUpdated={() => { if (confirmDiscardVault()) void checkAuth(); }}
+          onForgetDevice={handleForgetDevice}
+        /> : null
       ) : (
         <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
           <div style={{ textAlign: "center", maxWidth: "440px", padding: "2rem" }}>

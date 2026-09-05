@@ -8,7 +8,7 @@ KyPassword Server is a zero-knowledge KeePass v4 management and synchronization 
 2. **Key Custody & Envelopes**: Vault master key (256-bit) is wrapped client-side into password-wrapped, paper-recovery-wrapped, and device-wrapped envelopes using PBKDF2/Argon2 + AES-GCM. Changing passwords re-wraps the envelope without re-encrypting the full KDBX.
    KyAuth may upload its local KDBX and password envelope when the server vault is empty; the web client opens both raw-key and KyAuth hex-key KDBX credentials.
 3. **Atomic Sync & Conflict Preservation**: Optimistic concurrency via ETag / version check (`If-Match: "{version}"`). Conflicting uploads are rejected and preserved in `conflicts/` for client deconfliction.
-4. **90-Day Version History & Rollback**: Automatic version snapshots with 90-day retention policy and one-click rollback.
+4. **Bounded Version History & Rollback**: Keep up to 100 snapshots per user spread across a default 90-day age window, with one-click rollback. Saves and rollbacks prune synchronously under the store lock. After age expiry, preserve the oldest/newest snapshots and thin the closest-spaced interior snapshots so a burst of writes cannot erase the pre-session recovery window.
 5. **KySignOn SSO & Directory Replication**: KySignOn is the sole authenticator and sole directory (`/api/auth/oidc/login`, `/api/sync/webhook`). There is no local login, no local account creation and no server-side credential of any kind. See "Replication" and "Authentication" below.
 6. **Native Device Pairing**: 90-second PIN and QR code protocol (`/api/devices/pairing/*`) for mobile apps and browser extensions.
 7. **Tamper-Evident Audit Logging**: Cryptographic hash-chained audit trail (`/api/audit/*`).
@@ -130,6 +130,20 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
 - DOX hierarchy scope is app-only.
 
 ## Child DOX Index
+
+- `frontend/src/lib/vaultSave.ts`: owns one automatic save queue per unlocked vault.
+  Applied edits, entry/folder creation, deletion, and CSV import enqueue saves after 1.5 seconds
+  of idle time. Explicit retry flushes immediately. Serialize
+  KDBX exports and uploads; each success acknowledges only its starting edit revision and
+  advances the version for the next upload. Failures (including 409) remain unsaved and
+  require explicit retry. Uploads use the shared CSRF request helper. `App.tsx` retains
+  the queue and mounted editor across tabs, warns before unloading unsaved work, and guards
+  rollback. Lock/logout/forget always allow the user to confirm discarding unsaved or in-flight
+  edits; saving cannot refuse those actions. Closing/replacing the queue cancels its timer,
+  aborts transport and prevents later revisions uploading. An already accepted request cannot
+  be undone. Logout clears the visible vault before network I/O; forgetting starts key removal
+  independently of logout. Draft fields require Apply Edits; they stay in memory only.
+  `vaultSave.test.ts` checks encrypted round trips, debounce, cancellation, failures, and retry.
 
 - `frontend/src/styles/styles.css`: `.settings-page` provides the bounded scroll area for
   Admin and Security within the fixed-height app shell; keep long backup forms reachable.
