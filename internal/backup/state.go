@@ -3,6 +3,7 @@ package backup
 
 import (
 	"bytes"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -240,6 +241,22 @@ func (s *StateStore) StorePairing(url, token string, key RecoveryKey) error {
 		return ErrDepositInProgress
 	}
 	defer s.operationMu.Unlock()
+	return s.storePairing(url, token, key)
+}
+
+// ClaimPairing reserves the lifecycle before consuming a one-use remote code.
+func (s *StateStore) ClaimPairing(ctx context.Context, client RecoveryClient, url, code string) (PairingResult, error) {
+	if !s.operationMu.TryLock() {
+		return PairingResult{}, ErrDepositInProgress
+	}
+	defer s.operationMu.Unlock()
+	result, err := client.Claim(ctx, url, code)
+	if err != nil {
+		return PairingResult{}, err
+	}
+	return result, s.storePairing(url, result.Token, result.Key)
+}
+func (s *StateStore) storePairing(url, token string, key RecoveryKey) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	settings := lockedSettings{s}

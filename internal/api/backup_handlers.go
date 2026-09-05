@@ -106,10 +106,7 @@ func (s *Server) handlePairRemoteRecovery(w http.ResponseWriter, r *http.Request
 		http.Error(w, "invalid pairing request", http.StatusBadRequest)
 		return
 	}
-	result, err := s.recovery.Claim(r.Context(), request.RecoveryURL, request.PairingCode)
-	if err == nil {
-		err = s.backupState.StorePairing(request.RecoveryURL, result.Token, result.Key)
-	}
+	result, err := s.backupState.ClaimPairing(r.Context(), s.recovery, request.RecoveryURL, request.PairingCode)
 	if err != nil {
 		s.record(r, "backup.pair_failed", u.ID, "", clientIP(r), backup.AuditSafe(err.Error()))
 		if errors.Is(err, backup.ErrDepositInProgress) {

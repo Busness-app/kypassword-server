@@ -214,6 +214,14 @@ func TestPartialBackupAndBusyUnpair(t *testing.T) {
 	if unpair.Code != http.StatusConflict {
 		t.Fatalf("unpair: %d %s", unpair.Code, unpair.Body.String())
 	}
+	claimant := &fakeRecovery{}
+	srv.recovery = claimant
+	pair := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(pair, csrfRequest(t, srv, admin, "POST", "/api/backup/pair-remote", `{"recoveryUrl":"https://recovery.example","pairingCode":"123456"}`))
+	if pair.Code != http.StatusConflict || claimant.claims != 0 {
+		t.Fatalf("busy pairing consumed code: status=%d claims=%d", pair.Code, claimant.claims)
+	}
+
 	// Release without closing so the deferred cleanup can close it once.
 	fake.release <- struct{}{}
 	<-done
