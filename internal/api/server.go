@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Busness-app/ky-primitives/oidcverify"
 	"github.com/Busness-app/kypassword-server/internal/audit"
 	"github.com/Busness-app/kypassword-server/internal/backup"
 	"github.com/Busness-app/kypassword-server/internal/devices"
@@ -55,8 +56,14 @@ type Server struct {
 	flushDone chan struct{}
 	closeOnce sync.Once
 
-	sessMu   sync.RWMutex
-	sessions map[string]Session // token -> Session
+	sessMu       sync.RWMutex
+	sessions     map[string]Session // token -> Session
+	oidcMu       sync.Mutex
+	oidcPending  map[string]oidcAttempt
+	oidcHTTP     *http.Client
+	oidcVerifier *oidcverify.Verifier
+	syncMu       sync.Mutex
+	syncReceipts map[string]syncReceipt
 }
 
 // Config holds initialization paths and secrets for Server.
@@ -123,9 +130,10 @@ func NewServer(cfg Config) (*Server, error) {
 		recovery:      recovery,
 		pairingSecret: cfg.PairingSecret,
 		sessions:      make(map[string]Session),
-		rejects:       newAuditBudget(auditBudgetWindow, auditBudgetBurst),
-		flushStop:     make(chan struct{}),
-		flushDone:     make(chan struct{}),
+		oidcPending:   make(map[string]oidcAttempt), oidcHTTP: sso.NewHTTPClient(), syncReceipts: make(map[string]syncReceipt),
+		rejects:   newAuditBudget(auditBudgetWindow, auditBudgetBurst),
+		flushStop: make(chan struct{}),
+		flushDone: make(chan struct{}),
 	}
 	s.backupService = &backup.Service{State: backupState, Collector: collector, Client: recovery, Config: cfg.Backup}
 	go s.flushSuppressed()
@@ -171,7 +179,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("DELETE /api/devices/{id}", s.withAuth(s.handleDeviceRevoke))
 
 	// Directory Sync Webhook
-	mux.HandleFunc("POST /api/sync/webhook", s.handleSyncWebhook)
+	mux.Handle("POST /api/sync/webhook", s.signedSyncHandler())
 
 	// Admin Operations
 	mux.HandleFunc("GET /api/admin/users", s.withAdmin(s.handleAdminUsersList))

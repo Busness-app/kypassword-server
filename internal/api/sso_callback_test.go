@@ -1,12 +1,19 @@
 package api
 
 import (
+	"crypto"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
+	"time"
 
 	"github.com/Busness-app/kypassword-server/internal/sso"
 	"github.com/Busness-app/kypassword-server/internal/users"
@@ -15,24 +22,58 @@ import (
 // mockIdP stands in for KySignOn, returning an id_token carrying exactly the claims given.
 func mockIdP(t *testing.T, claims map[string]any) *httptest.Server {
 	t.Helper()
-	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotated, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	idp := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		issuer := "https://" + r.Host
+		signingKey := key
+		publishedKid := "test-key"
+		if claims["__rotate"] == true {
+			signingKey = rotated
+			publishedKid = "rotated-key"
+		}
 		switch r.URL.Path {
 		case "/.well-known/openid-configuration":
-			_ = json.NewEncoder(w).Encode(map[string]string{
-				"issuer":                 "http://" + r.Host,
-				"authorization_endpoint": "http://" + r.Host + "/oauth/authorize",
-				"token_endpoint":         "http://" + r.Host + "/oauth/token",
-				"userinfo_endpoint":      "http://" + r.Host + "/oauth/userinfo",
-			})
+			json.NewEncoder(w).Encode(map[string]string{"issuer": issuer, "authorization_endpoint": issuer + "/oauth/authorize", "token_endpoint": issuer + "/oauth/token", "jwks_uri": issuer + "/jwks"})
+		case "/jwks":
+			json.NewEncoder(w).Encode(map[string]any{"keys": []any{map[string]any{"kty": "RSA", "alg": "RS256", "kid": publishedKid, "n": base64.RawURLEncoding.EncodeToString(signingKey.N.Bytes()), "e": base64.RawURLEncoding.EncodeToString(big.NewInt(int64(signingKey.E)).Bytes())}}})
 		case "/oauth/token":
-			payload, _ := json.Marshal(claims)
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"access_token": "mock-token",
-				"id_token":     "header." + base64.RawURLEncoding.EncodeToString(payload) + ".sig",
-				"token_type":   "Bearer",
-				"expires_in":   3600,
-			})
+			r.ParseForm()
+			values := map[string]any{"iss": issuer, "aud": "kypassword-app", "exp": time.Now().Add(time.Hour).Unix(), "iat": time.Now().Unix(), "nonce": r.Form.Get("code")}
+			for k, v := range claims {
+				values[k] = v
+			}
+			if claims["__missing_token"] == true {
+				json.NewEncoder(w).Encode(map[string]string{"access_token": "untrusted-access"})
+				return
+			}
+			alg := "RS256"
+			if a, ok := claims["__alg"].(string); ok {
+				alg = a
+			}
+			kid := publishedKid
+			if k, ok := claims["__kid"].(string); ok {
+				kid = k
+			}
+			h, _ := json.Marshal(map[string]string{"alg": alg, "kid": kid})
+			b, _ := json.Marshal(values)
+			raw := base64.RawURLEncoding.EncodeToString(h) + "." + base64.RawURLEncoding.EncodeToString(b)
+			sum := sha256.Sum256([]byte(raw))
+			sig, e := rsa.SignPKCS1v15(rand.Reader, signingKey, crypto.SHA256, sum[:])
+			if e != nil {
+				panic(e)
+			}
+			if claims["__bad_signature"] == true {
+				sig[0] ^= 1
+			}
+			json.NewEncoder(w).Encode(map[string]any{"id_token": raw + "." + base64.RawURLEncoding.EncodeToString(sig), "access_token": "mock-token", "token_type": "Bearer", "expires_in": 3600})
 		default:
 			http.NotFound(w, r)
 		}
@@ -63,7 +104,9 @@ func driveSSOCallback(t *testing.T, srv *Server) *httptest.ResponseRecorder {
 		t.Fatal("no SSO state cookie was issued")
 	}
 
-	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/auth/oidc/callback?code=mock_code&state=%s", stateCookie.Value[:32]), nil)
+	location, _ := url.Parse(rec.Header().Get("Location"))
+	nonce := location.Query().Get("nonce")
+	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/auth/oidc/callback?code=%s&state=%s", url.QueryEscape(nonce), stateCookie.Value), nil)
 	req.AddCookie(stateCookie)
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -97,6 +140,7 @@ func TestSSOCallbackDoesNotLinkByUsername(t *testing.T) {
 			"preferred_username": "alice",
 			"email":              "attacker@evil.example",
 		})
+		srv.oidcHTTP = idp.Client()
 		if err := srv.ssoStore.Save(sso.SSOSettings{Enabled: true, IssuerURL: idp.URL, ClientID: "kypassword-app"}); err != nil {
 			t.Fatalf("Save: %v", err)
 		}
@@ -132,6 +176,7 @@ func TestSSOCallbackDoesNotLinkByUsername(t *testing.T) {
 			"preferred_username": "alice",
 			"email":              "attacker@evil.example",
 		})
+		srv.oidcHTTP = idp.Client()
 		if err := srv.ssoStore.Save(sso.SSOSettings{Enabled: true, IssuerURL: idp.URL, ClientID: "kypassword-app"}); err != nil {
 			t.Fatalf("Save: %v", err)
 		}
@@ -170,6 +215,7 @@ func TestSSOCallbackStillMatchesOnSub(t *testing.T) {
 		"preferred_username": "alice",
 		"email":              "alice@example.com",
 	})
+	srv.oidcHTTP = idp.Client()
 	if err := srv.ssoStore.Save(sso.SSOSettings{Enabled: true, IssuerURL: idp.URL, ClientID: "kypassword-app"}); err != nil {
 		t.Fatalf("Save: %v", err)
 	}

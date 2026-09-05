@@ -2,10 +2,9 @@ package api
 
 import (
 	"bytes"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
+	"crypto/rand"
 	"fmt"
+	"github.com/Busness-app/ky-primitives/syncauth"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -32,24 +31,15 @@ func scimUserResource(id, username, email, role string, active bool) []byte {
 }`, id, id, username, username, username, email, role, active))
 }
 
-// signedSyncRequest builds a replication request the way KySignOn's deliver() does:
-// bearer token, event type header, and an HMAC over `timestamp + "." + body`.
+// signedSyncRequest uses the same released signer as KySignOn deliver().
 func signedSyncRequest(secret, event string, body []byte) *http.Request {
-	ts := time.Now().UTC().Format(time.RFC3339)
-	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write([]byte(ts))
-	mac.Write([]byte("."))
-	mac.Write(body)
-
-	req := httptest.NewRequest(http.MethodPost, "/api/sync/webhook", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/scim+json")
-	req.Header.Set("Authorization", "Bearer "+secret)
-	req.Header.Set("X-KySignOn-Event-Type", event)
-	req.Header.Set("X-KySignOn-Timestamp", ts)
-	req.Header.Set("X-KySignOn-Signature", hex.EncodeToString(mac.Sum(nil)))
-	req.Header.Set("X-KySignOn-Event-Id", "evt-"+event)
-	req.Header.Set("Idempotency-Key", "evt-"+event)
-	return req
+	r := httptest.NewRequest(http.MethodPost, "/api/sync/webhook", bytes.NewReader(body))
+	r.Header.Set("Content-Type", "application/scim+json")
+	h, err := syncauth.Sign([]byte(secret), time.Now().UTC(), event, rand.Text(), body)
+	if err == nil {
+		h.Apply(r)
+	}
+	return r
 }
 
 func doSync(t *testing.T, srv *Server, req *http.Request) *httptest.ResponseRecorder {
@@ -94,8 +84,12 @@ func TestSyncWebhookRejectsUnknownEventType(t *testing.T) {
 	body := scimUserResource("kysignon-sub-bob", "bob", "bob@example.com", "user", true)
 	for _, event := range []string{"", "user.renamed", "group.created"} {
 		rec := doSync(t, srv, signedSyncRequest(srv.pairingSecret, event, body))
-		if rec.Code != http.StatusBadRequest {
-			t.Errorf("event %q status = %d, want 400", event, rec.Code)
+		want := http.StatusBadRequest
+		if event == "" {
+			want = http.StatusUnauthorized
+		}
+		if rec.Code != want {
+			t.Errorf("event %q status = %d, want %d", event, rec.Code, want)
 		}
 	}
 
@@ -109,39 +103,25 @@ func TestSyncWebhookRejectsBadSignatureDespiteValidBearer(t *testing.T) {
 	body := scimUserResource("kysignon-sub-mallory", "mallory", "m@example.com", "admin", true)
 
 	cases := map[string]func(*http.Request){
-		"signature from the wrong secret": func(r *http.Request) {
-			ts := r.Header.Get("X-KySignOn-Timestamp")
-			mac := hmac.New(sha256.New, []byte("not-the-secret"))
-			mac.Write([]byte(ts))
-			mac.Write([]byte("."))
-			mac.Write(body)
-			r.Header.Set("X-KySignOn-Signature", hex.EncodeToString(mac.Sum(nil)))
+		"wrong secret": func(r *http.Request) {
+			h, _ := syncauth.Sign([]byte("wrong-but-long-enough-secret"), time.Now(), "user.created", r.Header.Get(syncauth.HeaderEventID), body)
+			h.Apply(r)
 		},
-		"signature with a flipped leading digit": func(r *http.Request) {
-			// Flip rather than overwrite: hard-coding "00" left the signature
-			// untouched, and the case passing, whenever the real one began "00".
-			sig := r.Header.Get("X-KySignOn-Signature")
-			flipped := "0"
-			if sig[0] == '0' {
-				flipped = "1"
-			}
-			r.Header.Set("X-KySignOn-Signature", flipped+sig[1:])
+		"changed signature": func(r *http.Request) { r.Header.Set(syncauth.HeaderSignature, "v1=bad") },
+		"old timestamp": func(r *http.Request) {
+			h, _ := syncauth.Sign([]byte(srv.pairingSecret), time.Now().Add(-time.Hour), "user.created", r.Header.Get(syncauth.HeaderEventID), body)
+			h.Apply(r)
 		},
-		"replayed outside the skew window": func(r *http.Request) {
-			old := time.Now().UTC().Add(-30 * time.Minute).Format(time.RFC3339)
-			mac := hmac.New(sha256.New, []byte(srv.pairingSecret))
-			mac.Write([]byte(old))
-			mac.Write([]byte("."))
-			mac.Write(body)
-			r.Header.Set("X-KySignOn-Timestamp", old)
-			r.Header.Set("X-KySignOn-Signature", hex.EncodeToString(mac.Sum(nil)))
-		},
+		"changed type":      func(r *http.Request) { r.Header.Set(syncauth.HeaderEventType, "user.deleted") },
+		"changed ID":        func(r *http.Request) { r.Header.Set(syncauth.HeaderEventID, "different") },
+		"missing signature": func(r *http.Request) { r.Header.Del(syncauth.HeaderSignature) },
 	}
 
 	for name, tamper := range cases {
 		t.Run(name, func(t *testing.T) {
 			req := signedSyncRequest(srv.pairingSecret, "user.created", body)
-			tamper(req) // the Authorization bearer stays valid throughout
+			req.Header.Set("Authorization", "Bearer "+srv.pairingSecret)
+			tamper(req)
 			rec := doSync(t, srv, req)
 			if rec.Code != http.StatusUnauthorized {
 				t.Fatalf("status = %d, want 401", rec.Code)
@@ -153,9 +133,8 @@ func TestSyncWebhookRejectsBadSignatureDespiteValidBearer(t *testing.T) {
 	}
 }
 
-func TestSyncWebhookAcceptsUnsignedLegacyBearer(t *testing.T) {
-	// A system paired before signing sends no X-KySignOn-Signature at all. It keeps
-	// working on its bearer token so an upgrade does not sever replication.
+func TestSyncWebhookRejectsUnsignedLegacyBearer(t *testing.T) {
+	// Unsigned bearer authentication is retired with the signed sender rollout.
 	srv := newTestServer(t)
 	body := scimUserResource("kysignon-sub-legacy", "legacy", "l@example.com", "user", true)
 
@@ -163,11 +142,11 @@ func TestSyncWebhookAcceptsUnsignedLegacyBearer(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer "+srv.pairingSecret)
 	req.Header.Set("X-KySignOn-Event-Type", "user.created")
 
-	if rec := doSync(t, srv, req); rec.Code != http.StatusOK {
+	if rec := doSync(t, srv, req); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
 	}
-	if _, err := srv.users.GetBySSOSub("kysignon-sub-legacy"); err != nil {
-		t.Fatalf("account was not provisioned: %v", err)
+	if _, err := srv.users.GetBySSOSub("kysignon-sub-legacy"); err == nil {
+		t.Fatal("unsigned request provisioned an account")
 	}
 }
 

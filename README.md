@@ -203,5 +203,24 @@ docker build -t kypassword-server:latest .   # or the container
 
 See `AGENTS.md` for the full verification suite and subsystem contracts.
 
+## Signed directory and identity rollout
+
+This receiver requires KySignOn's `syncauth` v1 sender (verified in KySignOn master
+`a2d5dbc59c0724fd96dc21a861f1e6ba33b38711`). Deploy compatible sender and receiver together;
+legacy bearer-only and timestamp-dot-body signatures are rejected. Keep the configured
+pairing/client secret; the secret is used as an HMAC key and no longer travels in a header.
+Use the suite type `kypassword` and callback `/api/sync/webhook`.
+
+Completed event retries receive an acknowledgement without reapplying the directory change.
+Failed handlers may retry the same ID and payload; reused IDs with different content are
+refused. The bounded receipt cache covers the signature window within one process; restarting
+clears it. Captured requests still expire after the library's five-minute clock window.
+
+Login now verifies RS256 ID tokens against the configured HTTPS issuer/client and discovered
+JWKS, including a nonce tied to single-use server-side login state. In-flight logins from an
+older server or changed SSO configuration must start again. Userinfo can no longer substitute
+for a missing or invalid ID token. Verify real SSO login and a signed directory update after
+deployment; local TLS issuer tests are separate from that live proof.
+
 Local backup directories must not overlap `CONFIG_DIR` or `DATA_DIR/vaults`,
 `DATA_DIR/audit`, or `DATA_DIR/drill` (including symlink aliases). Startup rejects overlaps.
