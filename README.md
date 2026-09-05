@@ -166,7 +166,13 @@ A create returns the server's local `id`; use that ID for subsequent requests. A
 subject or username returns 409 and must be reconciled by the client. Deactivation revokes
 sessions and outstanding pairing codes. DELETE hides the directory resource and deactivates
 the retained account; it never deletes the encrypted vault. Recreating the same externalId
-restores the retained account. Sign-in continues through KySignOn only.
+restores the retained account. A signed `user.updated` event cannot undo deletion, even
+when it carries `active: true`: it is acknowledged and audited as `sync.update_ignored_deleted`.
+An explicit signed `user.created` can restore the account and records `sync.user_restored`.
+Local administrator reactivation remains an override; active accounts always appear in SCIM
+GET/list so reconciliation can see that access. Failed SCIM authentication is recorded through
+the existing bounded anonymous-rejection audit path, without credential values.
+Sign-in continues through KySignOn only.
 
 The shared `github.com/Busness-app/ky-primitives/scim` v0.6.0 client is verified against this
 receiver over TLS. The existing **signed webhook** is a separate supported interface:

@@ -193,6 +193,25 @@ func TestSCIMTokenIsSeparateAndDisabledByDefault(t *testing.T) {
 			t.Fatalf("non-provisioning credential accepted: %d", rec.Code)
 		}
 	}
+	entries, err := srv.audit.List(100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rejections := 0
+	for _, entry := range entries {
+		if entry.Action == "scim.rejected" {
+			rejections++
+		}
+		encoded, _ := json.Marshal(entry)
+		for _, secret := range []string{srv.scimToken, srv.pairingSecret, cookie.Value, "wrong"} {
+			if strings.Contains(string(encoded), secret) {
+				t.Fatal("credential leaked into audit log")
+			}
+		}
+	}
+	if rejections != 5 {
+		t.Fatalf("SCIM rejection records = %d, want disabled request plus four rejected credentials", rejections)
+	}
 	req = httptest.NewRequest("GET", "/api/vault/metadata", nil)
 	req.Header.Set("Authorization", "Bearer "+srv.scimToken)
 	rec = httptest.NewRecorder()
@@ -246,12 +265,27 @@ func TestSCIMDeletionAndSignedRecreationRetainIdentity(t *testing.T) {
 	if err := client.DeleteUser(context.Background(), created.ID); err != nil {
 		t.Fatal(err)
 	}
+	if response := doSync(t, srv, signedSyncRequest(srv.pairingSecret, "user.updated", body)); response.Code != 200 {
+		t.Fatal(response.Body)
+	}
+	deleted, err := srv.users.Get(created.ID)
+	if err != nil || deleted.Active || !deleted.SCIMDeleted {
+		t.Fatalf("routine update restored deleted account: %+v %v", deleted, err)
+	}
+	tally, _ := auditTally(t, srv)
+	if tally["sync.update_ignored_deleted"] != 1 {
+		t.Fatal("ignored update was not identified in audit log")
+	}
 	if response := doSync(t, srv, signedSyncRequest(srv.pairingSecret, "user.created", body)); response.Code != 200 {
 		t.Fatal(response.Body)
 	}
 	restored, err := client.GetUser(context.Background(), created.ID)
 	if err != nil || !restored.Active || restored.ExternalID != sender.ExternalID {
 		t.Fatalf("signed recreation: %+v %v", restored, err)
+	}
+	tally, _ = auditTally(t, srv)
+	if tally["sync.user_restored"] != 1 {
+		t.Fatal("explicit restoration was not identified in audit log")
 	}
 }
 
@@ -289,5 +323,35 @@ func TestSCIMFiltersAndPagination(t *testing.T) {
 		} else if response.StatusCode != 200 || len(body.Resources) != 0 || body.TotalResults != 1 {
 			t.Fatalf("pagination %s: %+v", query, body)
 		}
+	}
+}
+
+func TestSCIMShowsLocallyReactivatedAccount(t *testing.T) {
+	srv, client := scimTestClient(t)
+	ctx := context.Background()
+	input := scim.User{ExternalID: "local-reactivation-sub", UserName: "local-reactivation-user", Active: true}
+	created, err := client.CreateUser(ctx, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.DeleteUser(ctx, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.GetUser(ctx, created.ID); !errors.Is(err, scim.ErrNotFound) {
+		t.Fatalf("inactive deletion visible: %v", err)
+	}
+	if err := srv.users.Reactivate(created.ID); err != nil {
+		t.Fatal(err)
+	}
+	visible, err := client.GetUser(ctx, created.ID)
+	if err != nil || !visible.Active {
+		t.Fatalf("active account hidden: %+v %v", visible, err)
+	}
+	found, err := client.FindUser(ctx, "externalId", input.ExternalID)
+	if err != nil || found.ID != created.ID {
+		t.Fatalf("active account missing from reconciliation: %+v %v", found, err)
+	}
+	if _, err := client.CreateUser(ctx, input); !errors.Is(err, scim.ErrConflict) {
+		t.Fatalf("active account treated as deleted on creation: %v", err)
 	}
 }

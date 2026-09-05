@@ -47,6 +47,7 @@ func (s *Server) scimRoutes() http.Handler {
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.scimToken == "" {
+			s.recordAnonymousRejection(r, "scim.rejected", clientIP(r), "provisioning is not configured")
 			scimError(w, 404, "", "SCIM provisioning is not configured")
 			return
 		}
@@ -54,6 +55,7 @@ func (s *Server) scimRoutes() http.Handler {
 		token, ok := strings.CutPrefix(header, "Bearer ")
 		want, got := sha256.Sum256([]byte(s.scimToken)), sha256.Sum256([]byte(token))
 		if !ok || subtle.ConstantTimeCompare(want[:], got[:]) != 1 {
+			s.recordAnonymousRejection(r, "scim.rejected", clientIP(r), "provisioning token rejected")
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			scimError(w, 401, "", "Invalid provisioning token")
 			return
@@ -64,6 +66,10 @@ func (s *Server) scimRoutes() http.Handler {
 		mux.ServeHTTP(w, r)
 	})
 }
+
+// Local reactivation is an explicit override: an active account must remain visible
+// even when a previous directory deletion marker still exists.
+func isSCIMDeleted(u users.User) bool { return u.SCIMDeleted && !u.Active }
 
 func scimResource(u users.User) scim.User {
 	name := u.SSOUsername
@@ -105,7 +111,7 @@ func (s *Server) handleSCIMUser(w http.ResponseWriter, r *http.Request) {
 	if id != "" {
 		var err error
 		existing, err = s.users.Get(id)
-		if err != nil || existing.SCIMDeleted {
+		if err != nil || isSCIMDeleted(existing) {
 			scimError(w, 404, "", "User not found")
 			return
 		}
@@ -162,7 +168,7 @@ func (s *Server) handleSCIMUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, u := range s.users.List() {
-		if u.SSOSub != candidate.ExternalID && !u.SCIMDeleted && strings.EqualFold(scimResource(u).UserName, candidate.UserName) {
+		if u.SSOSub != candidate.ExternalID && !isSCIMDeleted(u) && strings.EqualFold(scimResource(u).UserName, candidate.UserName) {
 			scimError(w, 409, "uniqueness", "userName is already in use by another identity")
 			return
 		}
@@ -170,7 +176,7 @@ func (s *Server) handleSCIMUser(w http.ResponseWriter, r *http.Request) {
 	status := http.StatusOK
 	if r.Method == "POST" {
 		found, err := s.users.GetBySSOSub(candidate.ExternalID)
-		if err == nil && !found.SCIMDeleted {
+		if err == nil && !isSCIMDeleted(found) {
 			scimError(w, 409, "uniqueness", "An account already exists for this externalId")
 			return
 		}
@@ -249,7 +255,7 @@ func (s *Server) listSCIMUsers(w http.ResponseWriter, r *http.Request) {
 	count = min(count, 100)
 	matches := []scim.User{}
 	for _, u := range s.users.List() {
-		if u.SCIMDeleted || u.SSOSub == "" {
+		if isSCIMDeleted(u) || u.SSOSub == "" {
 			continue
 		}
 		resource := scimResource(u)

@@ -91,12 +91,12 @@ func (s *Server) handleSyncWebhook(w http.ResponseWriter, r *http.Request) {
 	switch event {
 	case "user.created":
 		if existing, errGet := s.users.GetBySSOSub(u.ID); errGet == nil {
-			if existing.SCIMDeleted {
+			if isSCIMDeleted(existing) {
 				if err := s.applySCIMUpdate(existing, u); err != nil {
 					http.Error(w, "failed to restore directory account", http.StatusInternalServerError)
 					return
 				}
-				s.record(r, "sync.user_created", existing.ID, "", clientIP(r), "restored retained directory account")
+				s.record(r, "sync.user_restored", existing.ID, "", clientIP(r), "restored retained directory account on explicit create")
 				break
 			}
 			// KySignOn treats 409 on a create as success, so a retried event settles here
@@ -135,6 +135,10 @@ func (s *Server) handleSyncWebhook(w http.ResponseWriter, r *http.Request) {
 		if errGet != nil {
 			http.Error(w, "failed to look up account: "+errGet.Error(), http.StatusInternalServerError)
 			return
+		}
+		if isSCIMDeleted(existing) {
+			s.record(r, "sync.update_ignored_deleted", existing.ID, "", clientIP(r), "deleted account requires an explicit create to restore")
+			break
 		}
 		if err := s.applySCIMUpdate(existing, u); err != nil {
 			http.Error(w, "failed to apply update: "+err.Error(), http.StatusInternalServerError)

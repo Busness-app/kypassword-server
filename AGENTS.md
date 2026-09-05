@@ -92,8 +92,13 @@ reject additional values rather than discard them. Validate every operation befo
 one atomic directory update. Groups, bulk and arbitrary filters/attribute paths are outside
 this interface. `/ServiceProviderConfig` advertises supported operations.
 
-DELETE marks the account `scimDeleted` and inactive while retaining its vault. Tombstones
-are hidden from SCIM GET/list; creating the same externalId recovers that retained account.
+DELETE marks the account `scimDeleted` and inactive while retaining its vault. Only inactive
+tombstones are hidden from SCIM GET/list; a local admin's reactivation must remain visible.
+Creating the same externalId or an explicit signed `user.created` recovers the retained account.
+Signed `user.updated` acknowledges but never restores inactive tombstones, recording
+`sync.update_ignored_deleted`; explicit signed recreation records `sync.user_restored`.
+SCIM authentication/disabled-route failures use `recordAnonymousRejection` with action
+`scim.rejected`, a fixed non-secret detail and the existing source audit budget.
 Deactivation invalidates existing sessions and outstanding pairing codes. The standard
 client must use its bearer token and returned server IDs; the old signed generic sender's
 empty DELETE payload is not accepted by this interface. `Admin → User Directory` shows
