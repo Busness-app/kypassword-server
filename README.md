@@ -153,10 +153,10 @@ kypassword-server deposit
 kypassword-server restore --capsule kypassword.kycap --to ./restored
 ```
 
-`restore` reads custodian shares from standard input, never command-line arguments. Compare
-the authenticated capsule details it prints with KyRecovery's receipt before starting with
-`DATA_DIR=./restored/data` and `CONFIG_DIR=./restored/config`. Live local commands refuse to
-race the daemon; use the admin page while it is running.
+`restore` reads custodian shares from standard input, never command-line arguments. The full
+procedure, from picking the capsule to deciding what to trust afterwards, is
+[`docs/RESTORE.md`](docs/RESTORE.md). Live local commands refuse to race the daemon; use the
+admin page while it is running.
 
 The authoritative protocol is KyRecovery's `zero_code_pairing_handoff_spec.md` v2.0.0.
 
