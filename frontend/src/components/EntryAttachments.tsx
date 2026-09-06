@@ -13,6 +13,7 @@ export function EntryAttachments({ vault, entryUuid, readOnly, onChanged }: Prop
   const pending = useRef<AbortController | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [removeFromHistory, setRemoveFromHistory] = useState(false);
   const attachments = vault.getAttachments(entryUuid);
   useEffect(() => {
     const controller = new AbortController();
@@ -55,14 +56,26 @@ export function EntryAttachments({ vault, entryUuid, readOnly, onChanged }: Prop
 
   const remove = (name: string) => {
     if (readOnly || busy) return;
-    if (!confirm(vault.entryHistoryEnabled
+    if (!confirm(removeFromHistory
+      ? "Remove this file and all copies with this name from this entry's history? Other entries, vault snapshots and backups may still contain copies."
+      : vault.entryHistoryEnabled
       ? "Remove this attachment? The previous entry version is kept in Entry History. Existing snapshots and backups may also contain the file."
       : "Remove this attachment? Entry history is disabled. Existing snapshots and backups may still contain the file.")) return;
     try {
-      if (vault.removeAttachment(entryUuid, name)) onChanged();
+      if (vault.removeAttachment(entryUuid, name, removeFromHistory)) onChanged();
       setError("");
     } catch (error) {
       setError(error instanceof Error ? error.message : "Unable to remove this attachment.");
+    }
+  };
+
+  const clearHistory = () => {
+    if (readOnly || busy || !confirm("Remove all attachment copies from this entry's history? Current attachments and historical password fields will be kept. Other entries, snapshots and backups may still contain copies.")) return;
+    try {
+      if (vault.clearAttachmentHistory(entryUuid)) onChanged();
+      setError("");
+    } catch (error) {
+      setError(error instanceof Error ? error.message : "Unable to clear attachment history.");
     }
   };
 
@@ -79,6 +92,14 @@ export function EntryAttachments({ vault, entryUuid, readOnly, onChanged }: Prop
       </li>)}
     </ul> : <p>No attachments.</p>}
     {!readOnly ? <>
+      <label style={{ display: "flex", gap: "0.5rem", margin: "0.75rem 0" }}>
+        <input type="checkbox" checked={removeFromHistory} disabled={busy}
+          onChange={event => setRemoveFromHistory(event.target.checked)} />
+        Also remove saved copies from this entry’s history when removing a file
+      </label>
+      {vault.hasAttachmentHistory(entryUuid) ? <button type="button" className="btn btn-secondary btn-sm" disabled={busy}
+        onClick={clearHistory}>Clear attachment history</button> : null}
+      <p>Vault attachment budget: {(vault.attachmentBytes / 1024 / 1024).toFixed(1)} of 40 MiB used, including retained history and recycled entries.</p>
       <label className="input-label" htmlFor={inputId}>Add attachment</label>
       <input id={inputId} type="file" disabled={busy} onChange={event => {
         const file = event.target.files?.[0];

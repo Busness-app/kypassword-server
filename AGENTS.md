@@ -170,6 +170,15 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   binary cleanup, preserving references from live/recycled entries and retained history.
   `attachments.test.ts` checks encrypted download/removal/restore, shared and protected
   binaries, invalid/cancelled additions and cleanup with disabled history.
+  Reject additions before mutation above a 40 MiB vault-wide attachment budget, reserving
+  10 MiB below the server upload limit for other contents. Count unique referenced hashes
+  across live/recycled entries and history, plus per-reference base64 cost for inline binaries
+  and their pending checkpoint. Check after hashing so concurrent additions cannot bypass it.
+  Ordinary removal retains history; explicit removal of saved copies deletes that filename
+  from every history version. Clear attachment history removes only historical binaries,
+  keeping current files and password history. Both use autosave; export cleanup reclaims
+  unreferenced bytes. Tests reproduce budget overflow without mutation and recover an
+  imported >50 MiB vault with history enabled; shared copies in other entries survive.
 - `internal/api/vault_handlers.go`: read upload bodies with MaxBytesReader before any
   mutation. Raw and JSON requests above 50 MiB receive 413; exactly 50 MiB is accepted.
   LimitReader previously saved a truncated raw vault and returned 200. The streaming

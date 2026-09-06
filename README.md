@@ -62,8 +62,14 @@ before adding them.
 
 Adding or removing a file keeps the previous entry version when entry history is enabled.
 Use **Entry History** to restore it. Recycled entries allow downloads only. Removing a file
-does not erase copies in retained entry history, vault snapshots or backups.
+normally retains copies in entry history. To reclaim space, select **Also remove saved
+copies from this entry’s history when removing a file**, then remove the file.
+**Clear attachment history** removes historical attachment copies while keeping current
+attachments and historical password fields. Neither option removes copies referenced by
+other entries, vault snapshots or backups.
 
+New attachments must fit a vault-wide 40 MiB budget, including retained history and recycled
+entries; shared binary data counts once. This reserves 10 MiB for other vault contents.
 The complete vault upload limit is 50 MiB. Oversized uploads are rejected without changing
 the server copy; the browser retains unsaved changes and offers **Retry Save** and
 **Download .kdbx**. Switching entries, editing fields, navigating away or locking cancels

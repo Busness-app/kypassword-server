@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { randomBytes } from "node:crypto";
 import * as kdbxweb from "kdbxweb";
 import { KeePassVault, MAX_ATTACHMENT_BYTES } from "./kdbx";
 import { bytesToHex } from "./vaultCrypto";
@@ -8,6 +9,75 @@ const { Kdbx, Credentials, ProtectedValue } =
 
 const login = { title: "Files", username: "", password: "secret", url: "", notes: "", groupUuid: "" };
 const signal = () => new AbortController().signal;
+
+test("aggregate attachment budget rejects before mutation and explicit removal reclaims history bytes", async () => {
+  const vault = await KeePassVault.createNew(new Uint8Array(32).fill(24));
+  const entry = vault.createEntry(login);
+  for (let i = 0; i < 4; i++) {
+    await vault.addAttachment(entry.uuid, `${i}.bin`, new Uint8Array(randomBytes(MAX_ATTACHMENT_BYTES)).buffer, signal());
+  }
+  const before = vault.getAttachments(entry.uuid);
+  const history = vault.getEntryHistory(entry.uuid);
+  await assert.rejects(vault.addAttachment(entry.uuid, "over.bin", new Uint8Array(randomBytes(MAX_ATTACHMENT_BYTES)).buffer, signal()), /40 MiB/);
+  assert.deepEqual(vault.getAttachments(entry.uuid), before);
+  assert.deepEqual(vault.getEntryHistory(entry.uuid), history);
+  vault.removeAttachment(entry.uuid, "0.bin", true);
+  assert.ok((await vault.exportBinary()).byteLength < 40 * 1024 * 1024);
+});
+
+test("explicit removal frees retained attachment bytes with entry history enabled", async () => {
+  const vault = await KeePassVault.createNew(new Uint8Array(32).fill(25));
+  const entry = vault.createEntry(login);
+  for (let i = 0; i < 4; i++) await vault.addAttachment(entry.uuid, `${i}.bin`, new Uint8Array(randomBytes(MAX_ATTACHMENT_BYTES)).buffer, signal());
+  vault.removeAttachment(entry.uuid, "0.bin", true);
+  assert.ok((await vault.exportBinary()).byteLength < 40 * 1024 * 1024, "removal must reclaim history-pinned bytes");
+});
+
+test("clearing history reclaims removed files but preserves password history and other entries' shared copies", async () => {
+  const key = new Uint8Array(32).fill(26);
+  const vault = await KeePassVault.createNew(key);
+  const first = vault.createEntry(login);
+  const second = vault.createEntry(login);
+  const bytes = new Uint8Array([1, 2, 3]).buffer;
+  await vault.addAttachment(first.uuid, "file", bytes, signal());
+  await vault.addAttachment(second.uuid, "shared", bytes, signal());
+  assert.equal(vault.attachmentBytes, 3);
+  vault.removeAttachment(first.uuid, "file", true);
+  assert.equal(vault.attachmentBytes, 3, "other entry still pins the file");
+  assert.deepEqual(vault.getAttachment(second.uuid, "shared"), bytes);
+  vault.removeAttachment(second.uuid, "shared");
+  assert.equal(vault.attachmentBytes, 3, "ordinary removal retains history");
+  assert.equal(vault.clearAttachmentHistory(second.uuid), true);
+  assert.equal(vault.clearAttachmentHistory(second.uuid), false);
+  assert.equal(vault.attachmentBytes, 0);
+  const reopened = await KeePassVault.open(await vault.exportBinary(), key);
+  assert.equal(reopened.getEntryHistory(second.uuid).length, 2);
+  assert.equal(reopened.getEntryHistoryVersion(second.uuid, 1).fields.find(field => field.name === "Password")?.value, "secret");
+  assert.deepEqual(reopened.getEntryHistoryVersion(second.uuid, 1).attachments, []);
+  reopened.deleteEntry(second.uuid);
+  assert.throws(() => reopened.clearAttachmentHistory(second.uuid), /live vault/);
+});
+
+test("an imported vault above the upload limit can reclaim attachments without disabling history", async () => {
+  const key = new Uint8Array(32).fill(27);
+  const credentials = new Credentials(ProtectedValue.fromString(bytesToHex(key)));
+  const seed = await KeePassVault.createNew(key);
+  const db = await Kdbx.load(await seed.exportBinary(), credentials);
+  const entry = db.createEntry(db.getDefaultGroup());
+  for (let i = 0; i < 5; i++) entry.binaries.set(`${i}.bin`, await db.createBinary(new Uint8Array(randomBytes(MAX_ATTACHMENT_BYTES)).buffer));
+  entry.pushHistory();
+  const original = await db.save();
+  assert.ok(original.byteLength > 50 * 1024 * 1024);
+  const vault = await KeePassVault.open(original, key);
+  assert.ok(vault.entryHistoryEnabled);
+  vault.removeAttachment(entry.uuid.toString(), "0.bin", true);
+  const saved = await vault.exportBinary();
+  assert.ok(saved.byteLength < 50 * 1024 * 1024);
+  const reopened = await KeePassVault.open(saved, key);
+  assert.equal(reopened.getAttachments(entry.uuid.toString()).length, 4);
+  assert.ok(reopened.getEntryHistory(entry.uuid.toString()).length > 0);
+  assert.equal(reopened.getEntryHistoryVersion(entry.uuid.toString(), 0).attachments.includes("0.bin"), false);
+});
 
 test("attachments survive encrypted saves, removal history and undo without changing other entries", async () => {
   const key = new Uint8Array(32).fill(21);

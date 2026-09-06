@@ -47,6 +47,9 @@ CryptoEngine.setArgon2Impl(deriveArgon2Key);
 // lets either client open the other's vault, and lets a downloaded file open in KeePassXC.
 const KOTPASS_ARGON2 = { memoryBytes: 32 * 1024 * 1024, iterations: 8, parallelism: 2 };
 export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+// Matches handleVaultUpload's wire limit; reserve 10 MiB for fields/XML/encryption.
+export const MAX_VAULT_BYTES = 50 * 1024 * 1024;
+export const MAX_VAULT_ATTACHMENT_BYTES = MAX_VAULT_BYTES - 10 * 1024 * 1024;
 
 export type VaultEntry = {
   uuid: string;
@@ -257,6 +260,42 @@ export class KeePassVault {
     });
   }
 
+  private attachmentUsage() {
+    const hashes = new Set<string>();
+    let bytes = 0;
+    for (const entry of this.db.getDefaultGroup().allEntries()) {
+      for (const version of [entry, ...entry.history]) {
+        for (const binary of version.binaries.values()) {
+          if ("hash" in binary) {
+            if (!hashes.has(binary.hash)) bytes += binary.value.byteLength;
+            hashes.add(binary.hash);
+          } else {
+            // Imported inline binaries are base64-encoded separately in each version.
+            bytes += Math.ceil(binary.byteLength / 3) * 4;
+          }
+        }
+      }
+    }
+    return { bytes, hashes };
+  }
+
+  public get attachmentBytes(): number { return this.attachmentUsage().bytes; }
+
+  public hasAttachmentHistory(uuid: string): boolean {
+    return this.findEntry(uuid)?.history.some(version => version.binaries.size > 0) ?? false;
+  }
+
+  public clearAttachmentHistory(uuid: string): boolean {
+    const entry = this.findEntry(uuid);
+    if (!entry?.parentGroup || this.recycledGroupIds().has(entry.parentGroup.uuid.toString())) {
+      throw new Error("Choose an entry in the live vault.");
+    }
+    if (!this.hasAttachmentHistory(uuid)) return false;
+    for (const version of entry.history) version.binaries.clear();
+    entry.times.update();
+    return true;
+  }
+
   public getAttachment(uuid: string, name: string): ArrayBuffer {
     const binary = this.findEntry(uuid)?.binaries.get(name);
     if (!binary) throw new Error("This attachment is no longer available.");
@@ -276,13 +315,21 @@ export class KeePassVault {
       throw new Error("Choose an entry in the live vault.");
     }
     if (entry.binaries.has(name)) throw new Error("An attachment with this name already exists. Rename the file before adding it.");
+    const usage = this.attachmentUsage();
+    // Check after hashing, immediately before mutation, including concurrent additions.
+    // A checkpoint duplicates imported inline binaries, while hashed binaries are shared.
+    const inlineCheckpointBytes = this.entryHistoryEnabled ? [...entry.binaries.values()].reduce((sum, value) =>
+      sum + ("hash" in value ? 0 : Math.ceil(value.byteLength / 3) * 4), 0) : 0;
+    if (usage.bytes + inlineCheckpointBytes + (usage.hashes.has(binary.hash) ? 0 : binary.value.byteLength) > MAX_VAULT_ATTACHMENT_BYTES) {
+      throw new Error("The vault's 40 MiB attachment budget includes retained history and recycled entries. Remove files and their saved copies, or clear attachment history, before adding more. The total upload limit is 50 MiB.");
+    }
     this.pushEntryHistory(entry);
     this.db.binaries.addWithHash(binary);
     entry.binaries.set(name, binary);
     entry.times.update();
   }
 
-  public removeAttachment(uuid: string, name: string): boolean {
+  public removeAttachment(uuid: string, name: string, removeFromHistory = false): boolean {
     const entry = this.findEntry(uuid);
     if (!entry?.parentGroup || this.recycledGroupIds().has(entry.parentGroup.uuid.toString())) {
       throw new Error("Choose an entry in the live vault.");
@@ -290,6 +337,7 @@ export class KeePassVault {
     if (!entry.binaries.has(name)) return false;
     this.pushEntryHistory(entry);
     entry.binaries.delete(name);
+    if (removeFromHistory) for (const version of entry.history) version.binaries.delete(name);
     entry.times.update();
     // History and other entries may still reference these bytes.
     return true;
