@@ -156,7 +156,8 @@ export class KeePassVault {
       item.customIcon = newId;
     }
     for (const [id, icon] of existingIcons) this.db.meta.customIcons.set(id, icon);
-    copy.fields.set("Title", `${entryFieldText(entry, "Title") || "Untitled"} (recovered)`);
+    const title = `${entryFieldText(entry, "Title") || "Untitled"} (recovered)`;
+    copy.fields.set("Title", entry.fields.get("Title") instanceof ProtectedValue ? ProtectedValue.fromString(title) : title);
     return copy.uuid.toString();
   }
 

@@ -50,6 +50,22 @@ func TestConflictDownloadIsOwnerOnlyAndReadOnly(t *testing.T) {
 			}
 		})
 	}
+	audit, err := srv.audit.List(100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	downloads := 0
+	for _, entry := range audit {
+		if entry.Action == "vault.conflict_download" {
+			downloads++
+			if entry.Details != "downloaded preserved conflict "+conflict.ConflictID {
+				t.Fatalf("download audit does not identify the conflict: %q", entry.Details)
+			}
+		}
+	}
+	if downloads != 1 {
+		t.Fatalf("expected one successful download audit, got %d", downloads)
+	}
 	metadata, err := srv.vault.GetMetadata(owner.ID)
 	if err != nil || metadata.Version != 1 {
 		t.Fatalf("download changed version: %+v %v", metadata, err)

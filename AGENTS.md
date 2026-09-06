@@ -165,14 +165,14 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   opens it locally with the unlocked key. Compare live entries by UUID across title,
   username, password, URL, notes and TOTP; other fields/history/attachments are not compared.
   Recover as copy imports the complete native entry into the top-level live folder with a
-  fresh UUID and title suffix, preserving unknown fields, binaries and history. Remap imported
+  fresh UUID and title suffix, preserving title protection, unknown fields, binaries and history. Remap imported
   icon collisions so existing icons cannot change. Never overwrite an existing entry or delete
   the conflict automatically. Use ordinary version-checked autosave; rollback and conflict discard
   stay disabled while recovery edits are unsaved. Close/lock cancels transport and ignores late decryption.
   `conflictComparison.test.ts` checks comparison identity, protected fields and full encrypted
   import preservation. Shared `getEntries()` reads every protected standard field as text.
 - `GET /api/vault/conflicts/{id}` returns ciphertext only to the owning authenticated user,
-  with no-store caching and a download audit event. `Store.OpenConflict` validates a flat
+  with no-store caching and a download audit event identifying the validated conflict ID. `Store.OpenConflict` validates a flat
   filename and uses `os.OpenInRoot` to prevent escaping symlinks. Discard shares filename
   validation. API/store tests cover anonymous/cross-user access, traversal, symlinks and
   read-only retrieval. Recoveries do not bypass If-Match or server conflict preservation.

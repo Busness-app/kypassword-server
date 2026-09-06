@@ -193,7 +193,8 @@ func (s *Server) handleVaultConflictDiscard(w http.ResponseWriter, r *http.Reque
 }
 
 func (s *Server) handleVaultConflictDownload(w http.ResponseWriter, r *http.Request, u users.User) {
-	rc, err := s.vault.OpenConflict(u.ID, r.PathValue("id"))
+	id := r.PathValue("id")
+	rc, err := s.vault.OpenConflict(u.ID, id)
 	if err != nil {
 		if errors.Is(err, vault.ErrNotFound) {
 			http.Error(w, "conflict not found", http.StatusNotFound)
@@ -207,5 +208,5 @@ func (s *Server) handleVaultConflictDownload(w http.ResponseWriter, r *http.Requ
 	w.Header().Set("Content-Disposition", `attachment; filename="conflict.kdbx"`)
 	w.Header().Set("Cache-Control", "no-store")
 	_, _ = io.Copy(w, rc)
-	s.record(r, "vault.conflict_download", u.ID, "", clientIP(r), "downloaded preserved conflict")
+	s.record(r, "vault.conflict_download", u.ID, "", clientIP(r), "downloaded preserved conflict "+id)
 }

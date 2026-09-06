@@ -61,7 +61,8 @@ test("recovering a copy preserves full entry data without replacing current entr
   const reopened = await Kdbx.load(await current.exportBinary(), credentials);
   const recovered = [...reopened.getDefaultGroup().allEntries()].find(entry => entry.uuid.toString() === copyId);
   assert.ok(recovered);
-  assert.equal(recovered.fields.get("Title"), "Account (recovered)");
+  assert.ok(recovered.fields.get("Title") instanceof ProtectedValue);
+  assert.equal(text(recovered.fields.get("Title")), "Account (recovered)");
   assert.equal(text(recovered.fields.get("Custom secret")), "keep custom field");
   assert.equal(text(recovered.fields.get("Password")), "old password");
   assert.equal(recovered.fields.get("otp"), "JBSWY3DPEHPK3PXP");
@@ -77,4 +78,18 @@ test("recovering a copy preserves full entry data without replacing current entr
   assert.deepEqual(reopened.meta.customIcons.get(iconId.toString())?.data, new Uint8Array([1, 2]).buffer);
   assert.deepEqual(reopened.meta.customIcons.get(recovered.customIcon.toString())?.data, new Uint8Array([3, 4]).buffer);
   assert.equal((await KeePassVault.open(await current.exportBinary(), key)).getRecycledEntries().length, 1);
+});
+
+test("recovering an unprotected title keeps it unprotected", async () => {
+  const key = new Uint8Array(32).fill(5);
+  const source = await KeePassVault.createNew(key);
+  const entry = source.createEntry({title: "Plain", username: "", password: "p", url: "", notes: "", groupUuid: ""});
+  const target = await KeePassVault.createNew(key);
+  const id = target.recoverEntryCopy(source, entry.uuid);
+  const credentials = new Credentials(ProtectedValue.fromString(Array.from(key, b => b.toString(16).padStart(2, "0")).join("")));
+  const db = await Kdbx.load(await target.exportBinary(), credentials);
+  const copy = [...db.getDefaultGroup().allEntries()].find(item => item.uuid.toString() === id);
+  assert.ok(copy);
+  assert.equal(typeof copy.fields.get("Title"), "string");
+  assert.equal(copy.fields.get("Title"), "Plain (recovered)");
 });
