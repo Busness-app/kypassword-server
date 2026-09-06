@@ -160,6 +160,23 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
 
 ## Child DOX Index
 
+- `frontend/src/components/ConflictComparison.tsx` and `lib/conflictComparison.ts`:
+  Version History → Preserved Conflicts downloads an owner-scoped encrypted conflict and
+  opens it locally with the unlocked key. Compare live entries by UUID across title,
+  username, password, URL, notes and TOTP; other fields/history/attachments are not compared.
+  Recover as copy imports the complete native entry into the top-level live folder with a
+  fresh UUID and title suffix, preserving unknown fields, binaries and history. Remap imported
+  icon collisions so existing icons cannot change. Never overwrite an existing entry or delete
+  the conflict automatically. Use ordinary version-checked autosave; rollback and conflict discard
+  stay disabled while recovery edits are unsaved. Close/lock cancels transport and ignores late decryption.
+  `conflictComparison.test.ts` checks comparison identity, protected fields and full encrypted
+  import preservation. Shared `getEntries()` reads every protected standard field as text.
+- `GET /api/vault/conflicts/{id}` returns ciphertext only to the owning authenticated user,
+  with no-store caching and a download audit event. `Store.OpenConflict` validates a flat
+  filename and uses `os.OpenInRoot` to prevent escaping symlinks. Discard shares filename
+  validation. API/store tests cover anonymous/cross-user access, traversal, symlinks and
+  read-only retrieval. Recoveries do not bypass If-Match or server conflict preservation.
+
 - `frontend/src/lib/kdbx.ts` recycle helpers identify the bin and descendants by metadata
   UUID. `VaultPage` excludes them from All Items and folder selectors and offers a read-only
   Recycle Bin with Restore to vault (the top-level live group). Restore preserves entry UUID

@@ -2,7 +2,7 @@ import * as kdbxweb from "kdbxweb";
 import { bytesToHex } from "./vaultCrypto";
 import { argon2d, argon2i, argon2id } from "hash-wasm";
 // kdbxweb's UMD bundle defeats Node's CJS export lexer; classes arrive under `default`.
-const { CryptoEngine, Credentials, ProtectedValue, Kdbx, KdbxError, Consts, VarDictionary, Int64 } =
+const { CryptoEngine, Credentials, ProtectedValue, Kdbx, KdbxError, KdbxUuid, Consts, VarDictionary, Int64 } =
   (kdbxweb as { default?: typeof kdbxweb }).default ?? kdbxweb;
 
 // KyAuth's KDBX vaults are Argon2d, so opening or writing one needs an Argon2 engine.
@@ -67,6 +67,11 @@ export type VaultGroup = {
   entriesCount: number;
 };
 
+function entryFieldText(entry: kdbxweb.KdbxEntry, name: string): string {
+  const value = entry.fields.get(name);
+  return typeof value === "string" ? value : value?.getText() ?? "";
+}
+
 export class KeePassVault {
   private db: kdbxweb.Kdbx;
   private credentials: kdbxweb.Credentials;
@@ -123,6 +128,38 @@ export class KeePassVault {
     }
   }
 
+  // Copy the full native entry, including history, binaries and unknown fields.
+  // A new UUID avoids replacing a newer edit or reviving a current tombstone.
+  public recoverEntryCopy(source: KeePassVault, uuid: string): string {
+    const entry = source.findEntry(uuid);
+    if (!entry?.parentGroup || source.recycledGroupIds().has(entry.parentGroup.uuid.toString())) {
+      throw new Error("Select a live entry from the conflict.");
+    }
+    const destination = this.db.getDefaultGroup();
+    if (this.recycledGroupIds().has(destination.uuid.toString())) throw new Error("No live vault folder is available.");
+    // kdbxweb imports icons by UUID. Preserve current icons when another client reused
+    // the UUID with different data; give the recovered copy its own icon identity.
+    const existingIcons = new Map(this.db.meta.customIcons);
+    const copy = this.db.importEntry(entry, destination, source.db);
+    const importedIcons = new Map<string, kdbxweb.KdbxUuid>();
+    for (const item of [copy, ...copy.history]) {
+      const iconId = item.customIcon?.toString();
+      if (!iconId || !existingIcons.has(iconId)) continue;
+      const icon = source.db.meta.customIcons.get(iconId);
+      if (!icon) continue;
+      let newId = importedIcons.get(iconId);
+      if (!newId) {
+        newId = KdbxUuid.random();
+        importedIcons.set(iconId, newId);
+        this.db.meta.customIcons.set(newId.toString(), icon);
+      }
+      item.customIcon = newId;
+    }
+    for (const [id, icon] of existingIcons) this.db.meta.customIcons.set(id, icon);
+    copy.fields.set("Title", `${entryFieldText(entry, "Title") || "Untitled"} (recovered)`);
+    return copy.uuid.toString();
+  }
+
   // Export/Save the vault back into encrypted KDBX v4 ArrayBuffer
   public async exportBinary(): Promise<ArrayBuffer> {
     return this.db.save();
@@ -161,20 +198,12 @@ export class KeePassVault {
         continue;
       }
 
-      const title = e.fields.get("Title")?.toString() || "";
-      const username = e.fields.get("UserName")?.toString() || "";
-      
-      let password = "";
-      const pwField = e.fields.get("Password");
-      if (pwField instanceof ProtectedValue) {
-        password = pwField.getText();
-      } else if (typeof pwField === "string") {
-        password = pwField;
-      }
-
-      const url = e.fields.get("URL")?.toString() || "";
-      const notes = e.fields.get("Notes")?.toString() || "";
-      const otp = e.fields.get("otp")?.toString() || e.fields.get("TOTP")?.toString() || "";
+      const title = entryFieldText(e, "Title");
+      const username = entryFieldText(e, "UserName");
+      const password = entryFieldText(e, "Password");
+      const url = entryFieldText(e, "URL");
+      const notes = entryFieldText(e, "Notes");
+      const otp = entryFieldText(e, "otp") || entryFieldText(e, "TOTP");
 
       entries.push({
         uuid: e.uuid.toString(),

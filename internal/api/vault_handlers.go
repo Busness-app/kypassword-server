@@ -191,3 +191,21 @@ func (s *Server) handleVaultConflictDiscard(w http.ResponseWriter, r *http.Reque
 	s.record(r, "vault.conflict_discarded", u.ID, "", clientIP(r), "discarded conflict "+id)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
+
+func (s *Server) handleVaultConflictDownload(w http.ResponseWriter, r *http.Request, u users.User) {
+	rc, err := s.vault.OpenConflict(u.ID, r.PathValue("id"))
+	if err != nil {
+		if errors.Is(err, vault.ErrNotFound) {
+			http.Error(w, "conflict not found", http.StatusNotFound)
+		} else {
+			http.Error(w, "failed to open conflict", http.StatusInternalServerError)
+		}
+		return
+	}
+	defer rc.Close()
+	w.Header().Set("Content-Type", "application/x-keepass2")
+	w.Header().Set("Content-Disposition", `attachment; filename="conflict.kdbx"`)
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = io.Copy(w, rc)
+	s.record(r, "vault.conflict_download", u.ID, "", clientIP(r), "downloaded preserved conflict")
+}

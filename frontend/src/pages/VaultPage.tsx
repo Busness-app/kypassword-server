@@ -32,6 +32,7 @@ import {
 
 type Props = {
   vault: KeePassVault;
+  vaultKey: Uint8Array;
   vaultVersion: number;
   saveState: SaveState;
   onChanged: () => void;
@@ -43,7 +44,7 @@ type Props = {
   onReload: () => Promise<void>;
 };
 
-export function VaultPage({ vault, vaultVersion, onSave, onExport, onReload, saveState, onChanged, onDraftChange, hidden, initialDraft }: Props) {
+export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onReload, saveState, onChanged, onDraftChange, hidden, initialDraft }: Props) {
   const [groups, setGroups] = useState<VaultGroup[]>([]);
   const [selectedGroupUuid, setSelectedGroupUuid] = useState<string>("all");
   const [recycledIds, setRecycledIds] = useState<Set<string>>(new Set());
@@ -710,6 +711,14 @@ export function VaultPage({ vault, vaultVersion, onSave, onExport, onReload, sav
 
       {showHistory ? (
         <HistoryModal
+          allowRollback={saveState.kind === "saved" && !draftDirty}
+          recovery={{ vault, vaultKey, onRecovered: (uuid) => {
+            onChanged();
+            refreshVaultData();
+            setSelectedGroupUuid("all");
+            setShowReusedPasswords(false);
+            setSelectedEntryUuid(uuid);
+          } }}
           onClose={() => setShowHistory(false)}
           onRestored={async () => {
             setShowHistory(false);

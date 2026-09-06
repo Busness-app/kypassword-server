@@ -41,6 +41,11 @@ export async function requestJSON<T>(path: string, options: RequestInit = {}): P
   return res.json() as Promise<T>;
 }
 
+export async function getBinary(path: string, signal: AbortSignal): Promise<ArrayBuffer> {
+  const res = await request(path, { method: "GET", signal, cache: "no-store" });
+  return res.arrayBuffer();
+}
+
 export async function postBlob(path: string): Promise<Blob> {
   const res = await request(path, { method: "POST" });
   return res.blob();

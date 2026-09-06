@@ -458,9 +458,10 @@ export function App() {
       {lockNotice ? <p role="status" style={{ padding: "0.75rem", margin: 0 }}>{lockNotice}</p> : null}
 
       {/* Keep the editor mounted across tabs so drafts and save status survive navigation. */}
-      {vault && saveQueue ? (
+      {vault && vaultKey && saveQueue ? (
         <VaultPage
           vault={vault}
+          vaultKey={vaultKey}
           vaultVersion={saveState.version}
           saveState={saveState}
           onChanged={saveQueue.changed}
@@ -576,6 +577,7 @@ export function App() {
       {/* History & Rollback Modal */}
       {showHistoryModal ? (
         <HistoryModal
+          allowRollback={!vault && !saveQueue}
           onClose={() => setShowHistoryModal(false)}
           onRestored={async () => {
             setShowHistoryModal(false);
