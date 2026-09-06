@@ -160,6 +160,21 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
 
 ## Child DOX Index
 
+- `frontend/src/components/EntryHistoryModal.tsx` and `frontend/src/lib/kdbx.ts`: Entry
+  History reads native KeePass history in the unlocked browser. Changed Apply Edits
+  checkpoints the previous complete entry; no-op edits add no history or save revision.
+  Restore checkpoints the current entry, copies the selected native version, retains UUID
+  and current folder, and queues ordinary autosave. Preserve protected fields, binaries,
+  tags, auto-type, expiry and custom data (kdbxweb copyFrom omits customData/qualityCheck).
+  History masks passwords, TOTP and all protected fields; changing version or reopening
+  resets reveal. The native dialog closes on lock and tab navigation. History is unavailable
+  during entry editing; recycled entries allow viewing only. Refresh reuse detection and
+  editor fields after restoration. Honor historyMaxItems (default 10, negative unlimited);
+  a zero item/byte limit disables new checkpoints and restore while retaining readable
+  imported history. Positive byte-budget pruning awaits native historyMaxSize support.
+  `entryHistory.test.ts` covers encrypted restore/undo, unchanged edits, complete native
+  data, count limits, disabled history, and invalid/recycled targets.
+
 - `frontend/src/components/ConflictComparison.tsx` and `lib/conflictComparison.ts`:
   Version History → Preserved Conflicts downloads an owner-scoped encrypted conflict and
   opens it locally with the unlocked key. Compare live entries by UUID across title,

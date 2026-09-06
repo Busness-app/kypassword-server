@@ -37,6 +37,22 @@ The master password is never sent to the server, not even as a derived verifier.
 it re-wraps the vault key envelope in your browser; the KDBX itself is not re-encrypted.
 Your paper recovery code works the same way: it unlocks your vault, not the site.
 
+## Entry history
+
+Open an entry and choose **Entry History** to browse its previous KeePass versions.
+Changed **Apply Edits** actions keep the previous version in the encrypted vault.
+Passwords, TOTP keys and protected fields are masked until revealed.
+
+**Restore this version** restores the entry’s contents, including attachments and custom
+fields, keeps its current folder, and saves automatically. The replaced version remains
+in entry history so you can restore it again. A failed save keeps the restored changes
+locally for **Retry Save**, with the usual conflict protection.
+
+The vault’s entry-history count limit applies (10 by default). If history is disabled,
+existing versions remain readable but restoring is unavailable because the current version
+could not be preserved. Earlier web edits made before this feature have no entry versions
+unless another KeePass client recorded them; whole-vault snapshots remain separate.
+
 ## Configuration
 
 The identity provider is configured from the environment, and those values take precedence
