@@ -37,6 +37,17 @@ The master password is never sent to the server, not even as a derived verifier.
 it re-wraps the vault key envelope in your browser; the KDBX itself is not re-encrypted.
 Your paper recovery code works the same way: it unlocks your vault, not the site.
 
+## Folders
+
+Select a folder and use **Add Subfolder** to create a child, or **Rename Folder** to
+change its name. With All Items or Recycle Bin selected, **Add Folder** creates a
+top-level folder. Folder names must contain non-whitespace text and no control characters.
+Renaming preserves the folder's entries, attachments, history and child folders.
+
+The sidebar indents nested folders; entry and CSV-import folder selectors show full paths.
+Folder changes save automatically with the usual conflict protection. Recycle Bin and its
+descendants are excluded from folder editing.
+
 ## Entry history
 
 Open an entry and choose **Entry History** to browse its previous KeePass versions.

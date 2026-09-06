@@ -1,4 +1,4 @@
-import { KeePassVault, type VaultEntry } from "./kdbx";
+import { KeePassVault, folderName, type VaultEntry } from "./kdbx";
 
 export type CsvProvider =
   | "auto"
@@ -438,6 +438,14 @@ export function applyImportToVault(
   const pending = selected.filter(item => !duplicates.has(item.id));
   const skippedDuplicates = selected.length - pending.length;
   if (pending.length === 0) return { importedCount: 0, skippedDuplicates, foldersCreated: [] };
+  // Validate every prospective name before creating any folders or entries.
+  if (options.folderMode === "single_folder") {
+    if (options.newFolderName?.trim()) folderName(options.newFolderName);
+  } else {
+    for (const item of pending) {
+      for (const segment of splitFolderPath(item.folder || options.defaultFolderName || "")) folderName(segment);
+    }
+  }
   const existingGroups = vault.getLiveGroups();
   const rootUuid = existingGroups[0]?.uuid || "";
 
