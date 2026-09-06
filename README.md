@@ -53,6 +53,22 @@ existing versions remain readable but restoring is unavailable because the curre
 could not be preserved. Earlier web edits made before this feature have no entry versions
 unless another KeePass client recorded them; whole-vault snapshots remain separate.
 
+## Entry attachments
+
+An entry’s **Attachments** section adds files of up to 10 MiB, downloads decrypted copies,
+and removes files. Leave field editing to use these controls. Files stay inside the
+encrypted KeePass vault and changes save automatically. Rename files with duplicate names
+before adding them.
+
+Adding or removing a file keeps the previous entry version when entry history is enabled.
+Use **Entry History** to restore it. Recycled entries allow downloads only. Removing a file
+does not erase copies in retained entry history, vault snapshots or backups.
+
+The complete vault upload limit is 50 MiB. Oversized uploads are rejected without changing
+the server copy; the browser retains unsaved changes and offers **Retry Save** and
+**Download .kdbx**. Switching entries, editing fields, navigating away or locking cancels
+an attachment that is still being read.
+
 ## Configuration
 
 The identity provider is configured from the environment, and those values take precedence

@@ -435,6 +435,12 @@ button.group-item {
 .entry-history-fields dt { font-weight: 600; }
 .entry-history-fields dd { margin: 0.25rem 0 0; white-space: pre-wrap; }
 
+.entry-attachments { color: var(--ink-strong); overflow-wrap: anywhere; }
+.entry-attachments ul { list-style: none; padding: 0; }
+.entry-attachments li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem; margin: 0.75rem 0; }
+.entry-attachments li > div { display: flex; gap: 0.5rem; }
+.entry-attachments input { max-width: 100%; }
+
 /* Auth Cards */
 .auth-container {
   display: flex;

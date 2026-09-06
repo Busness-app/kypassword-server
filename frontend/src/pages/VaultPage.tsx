@@ -8,6 +8,7 @@ import { PasswordGenerator } from "../components/PasswordGenerator";
 import { DevicePairingModal } from "../components/DevicePairingModal";
 import { HistoryModal } from "../components/HistoryModal";
 import { EntryHistoryModal } from "../components/EntryHistoryModal";
+import { EntryAttachments } from "../components/EntryAttachments";
 import { CsvImportModal } from "../components/CsvImportModal";
 import {
   Folder,
@@ -676,6 +677,9 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
                 </div>
               )}
             </div>
+            {!isEditing && !hidden ? <EntryAttachments key={selectedEntry.uuid} vault={vault}
+              entryUuid={selectedEntry.uuid} readOnly={recycledIds.has(selectedEntry.uuid)}
+              onChanged={() => { onChanged(); refreshVaultData(); }} /> : null}
           </div>
         ) : (
           <div style={{ textAlign: "center", padding: "4rem 0", color: "var(--ink-muted)" }}>

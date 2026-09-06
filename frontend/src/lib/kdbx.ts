@@ -2,7 +2,7 @@ import * as kdbxweb from "kdbxweb";
 import { bytesToHex } from "./vaultCrypto";
 import { argon2d, argon2i, argon2id } from "hash-wasm";
 // kdbxweb's UMD bundle defeats Node's CJS export lexer; classes arrive under `default`.
-const { CryptoEngine, Credentials, ProtectedValue, Kdbx, KdbxError, KdbxUuid, Consts, VarDictionary, Int64 } =
+const { CryptoEngine, Credentials, ProtectedValue, Kdbx, KdbxBinaries, KdbxError, KdbxUuid, Consts, VarDictionary, Int64 } =
   (kdbxweb as { default?: typeof kdbxweb }).default ?? kdbxweb;
 
 // KyAuth's KDBX vaults are Argon2d, so opening or writing one needs an Argon2 engine.
@@ -46,6 +46,7 @@ CryptoEngine.setArgon2Impl(deriveArgon2Key);
 // KyAuth writes its vaults with kotpass's Ver4x defaults. Matching them exactly is what
 // lets either client open the other's vault, and lets a downloaded file open in KeePassXC.
 const KOTPASS_ARGON2 = { memoryBytes: 32 * 1024 * 1024, iterations: 8, parallelism: 2 };
+export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 
 export type VaultEntry = {
   uuid: string;
@@ -57,7 +58,6 @@ export type VaultEntry = {
   totpSeed?: string;
   groupUuid: string;
   updatedAt: Date;
-  attachments?: { name: string; data: ArrayBuffer }[];
 };
 
 export type VaultGroup = {
@@ -163,6 +163,8 @@ export class KeePassVault {
 
   // Export/Save the vault back into encrypted KDBX v4 ArrayBuffer
   public async exportBinary(): Promise<ArrayBuffer> {
+    // Keep binaries referenced by live/recycled entries or their retained history.
+    this.db.cleanup({ binaries: true });
     return this.db.save();
   }
 
@@ -246,6 +248,51 @@ export class KeePassVault {
     return (this.findEntry(uuid)?.history ?? []).map((entry, index) => ({
       index, updatedAt: entry.times.lastModTime,
     })).reverse();
+  }
+
+  public getAttachments(uuid: string) {
+    return [...(this.findEntry(uuid)?.binaries ?? [])].map(([name, binary]) => {
+      const value = "hash" in binary ? binary.value : binary;
+      return { name, sizeBytes: value.byteLength };
+    });
+  }
+
+  public getAttachment(uuid: string, name: string): ArrayBuffer {
+    const binary = this.findEntry(uuid)?.binaries.get(name);
+    if (!binary) throw new Error("This attachment is no longer available.");
+    const value = "hash" in binary ? binary.value : binary;
+    return value instanceof ProtectedValue ? value.getBinary().slice().buffer : value.slice(0);
+  }
+
+  public async addAttachment(uuid: string, name: string, data: ArrayBuffer, signal: AbortSignal): Promise<void> {
+    if (!name.trim() || /[\u0000-\u001f\u007f]/.test(name)) throw new Error("Choose a file with a valid name.");
+    if (data.byteLength > MAX_ATTACHMENT_BYTES) throw new Error("Attachments must be 10 MiB or smaller.");
+    signal.throwIfAborted();
+    // Hash outside the live database so lock/navigation cannot leave a late mutation.
+    const binary = await new KdbxBinaries().add(data.slice(0));
+    signal.throwIfAborted();
+    const entry = this.findEntry(uuid);
+    if (!entry?.parentGroup || this.recycledGroupIds().has(entry.parentGroup.uuid.toString())) {
+      throw new Error("Choose an entry in the live vault.");
+    }
+    if (entry.binaries.has(name)) throw new Error("An attachment with this name already exists. Rename the file before adding it.");
+    this.pushEntryHistory(entry);
+    this.db.binaries.addWithHash(binary);
+    entry.binaries.set(name, binary);
+    entry.times.update();
+  }
+
+  public removeAttachment(uuid: string, name: string): boolean {
+    const entry = this.findEntry(uuid);
+    if (!entry?.parentGroup || this.recycledGroupIds().has(entry.parentGroup.uuid.toString())) {
+      throw new Error("Choose an entry in the live vault.");
+    }
+    if (!entry.binaries.has(name)) return false;
+    this.pushEntryHistory(entry);
+    entry.binaries.delete(name);
+    entry.times.update();
+    // History and other entries may still reference these bytes.
+    return true;
   }
 
   public getEntryHistoryVersion(uuid: string, index: number) {
