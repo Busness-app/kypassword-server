@@ -228,12 +228,31 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
     }
   };
 
+  const selectedFolder = groups.find(group => group.uuid === selectedGroupUuid);
   const handleCreateGroup = () => {
-    const name = prompt("Enter folder / group name:");
-    if (!name) return;
-    vault.createGroup(name.trim());
-    onChanged();
-    refreshVaultData();
+    const name = prompt(selectedFolder ? `New subfolder in "${selectedFolder.path}":` : "New folder name:");
+    if (name === null) return;
+    try {
+      vault.createGroup(name, selectedFolder?.uuid);
+      onChanged();
+      refreshVaultData();
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "Unable to create folder.");
+    }
+  };
+
+  const handleRenameGroup = () => {
+    if (!selectedFolder) return;
+    const name = prompt("Rename folder:", selectedFolder.name);
+    if (name === null) return;
+    try {
+      if (vault.renameGroup(selectedFolder.uuid, name)) {
+        onChanged();
+        refreshVaultData();
+      }
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "Unable to rename folder.");
+    }
   };
 
   const filteredEntries = useMemo(() => {
@@ -261,7 +280,8 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
           <span style={{ fontWeight: 600, fontSize: "0.85rem", textTransform: "uppercase", color: "var(--ink)" }}>
             Folders
           </span>
-          <button className="btn btn-quiet btn-sm" onClick={handleCreateGroup} title="Add Folder">
+          <button type="button" className="btn btn-quiet btn-sm" onClick={handleCreateGroup}
+            title={selectedFolder ? "Add Subfolder" : "Add Folder"} aria-label={selectedFolder ? "Add Subfolder" : "Add Folder"}>
             <Plus size={16} />
           </button>
         </div>
@@ -285,20 +305,25 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
           <span>{recycledIds.size}</span>
         </button>
 
+        {selectedFolder ? <button type="button" className="btn btn-quiet btn-sm" onClick={handleRenameGroup}>Rename Folder</button> : null}
+
         {groups.map((g) => (
-          <div
+          <button type="button"
             key={g.uuid}
             className={`group-item ${selectedGroupUuid === g.uuid ? "active" : ""}`}
+            title={g.path}
+            aria-label={g.path} aria-pressed={selectedGroupUuid === g.uuid}
+            style={{ paddingLeft: `${1 + Math.min(g.depth, 6) * 0.75}rem` }}
             onClick={() => setSelectedGroupUuid(g.uuid)}
           >
             <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
               <Folder size={16} />
-              <span>{g.name}</span>
+              <span style={{ overflowWrap: "anywhere", textAlign: "left" }}>{g.name}</span>
             </div>
             <span className="font-mono" style={{ fontSize: "0.75rem" }}>
               {entries.filter((e) => e.groupUuid === g.uuid).length}
             </span>
-          </div>
+          </button>
         ))}
 
         <div style={{ marginTop: "auto", padding: "1rem", borderTop: "1px solid var(--line)" }}>
@@ -496,7 +521,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
                   >
                     {groups.map((g) => (
                       <option key={g.uuid} value={g.uuid}>
-                        {g.name}
+                        {g.path}
                       </option>
                     ))}
                   </select>

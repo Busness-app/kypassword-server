@@ -331,7 +331,7 @@ export function CsvImportModal({ vault, groups, onClose, onImportComplete }: Pro
                     >
                       {groups.map((g) => (
                         <option key={g.uuid} value={g.uuid}>
-                          {g.name}
+                          {g.path}
                         </option>
                       ))}
                     </select>

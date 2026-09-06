@@ -160,6 +160,19 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
 
 ## Child DOX Index
 
+- `frontend/src/lib/kdbx.ts` and `frontend/src/pages/VaultPage.tsx`: selected live
+  folders support child creation and rename through ordinary autosave. All Items/Recycle
+  Bin create at the live root. Rename updates only the native group name/times, retaining
+  UUID, children, entries and history; no-op names create no save revision. Reject blank
+  names/control characters and unknown parents before mutation. The shared createGroup
+  helper also constructs imported/recycled trees in tests; UI parents come from live groups.
+  Rename rejects the metadata recycle bin and descendants. Group views include full paths
+  and depth; sidebar indentation is capped at six levels while full paths remain available.
+  Entry/CSV selectors use paths. `folders.test.ts` checks encrypted rename/reopen,
+  nested paths, unchanged contents/history/binaries, no-ops, invalid targets and recycle guards.
+  CSV prevalidates all prospective folder names before mutation so an invalid later row cannot
+  leave earlier rows imported without a save revision; the same test file covers that boundary.
+
 - `frontend/src/components/EntryAttachments.tsx` and `frontend/src/lib/kdbx.ts`:
   entries support adding one file at a time (10 MiB maximum), downloading decrypted
   copies and removing attachments. Reject duplicate names rather than overwrite.
