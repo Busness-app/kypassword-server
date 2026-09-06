@@ -7,6 +7,7 @@ import {
   PROVIDER_LABELS,
   parseAndPreviewCsv,
   applyImportToVault,
+  findDuplicateImports,
 } from "../lib/csvImport";
 import {
   FileSpreadsheet,
@@ -25,7 +26,7 @@ type Props = {
   vault: KeePassVault;
   groups: VaultGroup[];
   onClose: () => void;
-  onImportComplete: (importedCount: number, foldersCreated: string[]) => void;
+  onImportComplete: (importedCount: number, foldersCreated: string[], skippedDuplicates: number) => void;
 };
 
 export function CsvImportModal({ vault, groups, onClose, onImportComplete }: Props) {
@@ -43,6 +44,7 @@ export function CsvImportModal({ vault, groups, onClose, onImportComplete }: Pro
   const [parseSummary, setParseSummary] = useState<CsvParseSummary | null>(null);
   const [tableSearch, setTableSearch] = useState<string>("");
   const [revealedPasswords, setRevealedPasswords] = useState<Record<string, boolean>>({});
+  const [skipDuplicates, setSkipDuplicates] = useState(true);
   const [isImporting, setIsImporting] = useState<boolean>(false);
   const [dragOver, setDragOver] = useState<boolean>(false);
 
@@ -109,28 +111,24 @@ export function CsvImportModal({ vault, groups, onClose, onImportComplete }: Pro
     return previewEntries.filter((e) => e.selected).length;
   }, [previewEntries]);
 
+  const duplicates = useMemo(() => findDuplicateImports(vault, previewEntries), [vault, previewEntries]);
+  const skippedCount = skipDuplicates ? previewEntries.filter(entry => entry.selected && duplicates.has(entry.id)).length : 0;
+  const importCount = selectedCount - skippedCount;
+
   const handleExecuteImport = () => {
-    if (selectedCount === 0) return;
+    if (importCount === 0) return;
     setIsImporting(true);
 
     try {
-      let targetFolderUuid = selectedFolderUuid;
-      let foldersCreatedList: string[] = [];
-
-      if (folderMode === "single_folder" && useNewFolder && newFolderName.trim()) {
-        const newGroup = vault.createGroup(newFolderName.trim());
-        targetFolderUuid = newGroup.uuid;
-        foldersCreatedList.push(newFolderName.trim());
-      }
-
       const res = applyImportToVault(vault, previewEntries, {
         folderMode,
-        targetFolderUuid,
+        targetFolderUuid: selectedFolderUuid,
+        newFolderName: useNewFolder ? newFolderName : undefined,
+        skipDuplicates,
         defaultFolderName: "Imported Passwords",
       });
 
-      const combinedCreatedFolders = [...foldersCreatedList, ...res.foldersCreated];
-      onImportComplete(res.importedCount, combinedCreatedFolders);
+      onImportComplete(res.importedCount, res.foldersCreated, res.skippedDuplicates);
       onClose();
     } catch (err: any) {
       alert("Failed to import entries: " + (err?.message || String(err)));
@@ -362,6 +360,20 @@ export function CsvImportModal({ vault, groups, onClose, onImportComplete }: Pro
           </div>
         ) : null}
 
+        {parseSummary ? (
+          <div style={{ marginBottom: "1rem" }}>
+            <label style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+              <input type="checkbox" checked={skipDuplicates} onChange={event => setSkipDuplicates(event.target.checked)} />
+              Skip exact duplicates
+            </label>
+            <p style={{ fontSize: "0.85rem", color: "var(--ink-muted)" }}>
+              Matches title, username, password, URL, notes and 2FA across all vault folders and selected CSV rows.
+              Changed values are imported as separate entries.
+            </p>
+            <p role="status">{importCount} to import; {skippedCount} duplicate{skippedCount === 1 ? "" : "s"} to skip.</p>
+          </div>
+        ) : null}
+
         {/* Parsed summary & Preview Table */}
         {parseSummary ? (
           <div>
@@ -471,6 +483,7 @@ export function CsvImportModal({ vault, groups, onClose, onImportComplete }: Pro
                         </td>
                         <td style={{ padding: "0.5rem 0.75rem", fontWeight: 600, color: "var(--ink-strong)" }}>
                           {item.title}
+                          {duplicates.has(item.id) ? <span className="badge badge-cyan" style={{ marginLeft: "0.5rem" }}>Duplicate</span> : null}
                           {item.url ? (
                             <div style={{ fontSize: "0.7rem", color: "var(--ink-muted)", fontWeight: 400 }}>
                               {item.url}
@@ -530,13 +543,13 @@ export function CsvImportModal({ vault, groups, onClose, onImportComplete }: Pro
           </button>
           <button
             className="btn btn-primary"
-            disabled={selectedCount === 0 || isImporting}
+            disabled={importCount === 0 || isImporting}
             onClick={handleExecuteImport}
           >
             <CheckCircle2 size={16} />
             {isImporting
               ? "Importing…"
-              : `Import ${selectedCount} Password${selectedCount === 1 ? "" : "s"}`}
+              : `Import ${importCount} Password${importCount === 1 ? "" : "s"}`}
           </button>
         </div>
       </div>

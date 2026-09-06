@@ -192,6 +192,14 @@ export class KeePassVault {
     return entries;
   }
 
+  // Recycle-bin entries remain browsable, but are not live credentials for import matching.
+  // Use the metadata UUID, not the localized/renameable group name, and include descendants.
+  public getLiveEntries(): VaultEntry[] {
+    const recycleBin = this.db.meta.recycleBinUuid ? this.db.getGroup(this.db.meta.recycleBinUuid) : undefined;
+    const recycledGroups = new Set(recycleBin ? [...recycleBin.allGroups()].map(group => group.uuid.toString()) : []);
+    return this.getEntries().filter(entry => !recycledGroups.has(entry.groupUuid));
+  }
+
   // Create a new entry in a group
   public createEntry(entry: Omit<VaultEntry, "uuid" | "updatedAt">): VaultEntry {
     let targetGroup = this.db.getDefaultGroup();

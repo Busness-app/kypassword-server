@@ -5,6 +5,7 @@ import {
   detectCsvProvider,
   parseAndPreviewCsv,
   applyImportToVault,
+  findDuplicateImports,
 } from "./csvImport.js";
 import { KeePassVault } from "./kdbx.js";
 
@@ -265,4 +266,78 @@ https://sub.domain.example.com/login,admin,admin123,Internal portal`;
     assert.ok(target);
     assert.equal(vault.getEntries(target.uuid).length, 1);
   });
+});
+
+
+test("CSV duplicates are skipped across folders and rows, with explicit opt-out", async () => {
+  const vault = await KeePassVault.createNew(new Uint8Array(32).fill(7));
+  const row = { id: "one", title: "Example", username: "user", password: "p", url: "https://example.test", notes: "n", totpSeed: "OTP", folder: "First", selected: true };
+  const rows = [row, { ...row, id: "two", folder: "Second" }];
+  assert.deepEqual([...findDuplicateImports(vault, rows)], ["two"]);
+  const first = applyImportToVault(vault, rows, { folderMode: "csv_folders" });
+  assert.equal(first.importedCount, 1);
+  assert.equal(first.skippedDuplicates, 1);
+  assert.deepEqual(first.foldersCreated, ["First"]);
+  const before = vault.getGroups().length;
+  assert.deepEqual(applyImportToVault(vault, rows, { folderMode: "single_folder", newFolderName: "Must not be created" }),
+    { importedCount: 0, skippedDuplicates: 2, foldersCreated: [] });
+  assert.equal(vault.getGroups().length, before);
+  assert.equal(vault.getEntries().length, 1);
+  const kept = applyImportToVault(vault, rows, { folderMode: "single_folder", newFolderName: "Intentional copies", skipDuplicates: false });
+  assert.equal(kept.importedCount, 2);
+  assert.equal(kept.skippedDuplicates, 0);
+  assert.deepEqual(kept.foldersCreated, ["Intentional copies"]);
+});
+
+test("duplicate selection ignores unchecked rows and preserves every changed content field", async () => {
+  const vault = await KeePassVault.createNew(new Uint8Array(32).fill(8));
+  const row = { id: "one", title: "Example", username: "user", password: "p", url: "https://example.test", notes: "n", totpSeed: "OTP", folder: "", selected: true };
+  assert.deepEqual([...findDuplicateImports(vault, [{ ...row, selected: false }, { ...row, id: "two" }])], []);
+  applyImportToVault(vault, [row], { folderMode: "csv_folders" });
+  const changes = ["title", "username", "password", "url", "notes", "totpSeed"].map(field => ({ ...row, id: field, [field]: "changed" }));
+  assert.equal(findDuplicateImports(vault, changes).size, 0);
+  assert.equal(applyImportToVault(vault, changes, { folderMode: "csv_folders" }).importedCount, 6);
+  const blank = { ...row, id: "blank", title: "" };
+  vault.createEntry({ ...row, title: "", groupUuid: vault.getGroups()[0].uuid });
+  assert.equal(findDuplicateImports(vault, [blank]).size, 0, "empty existing title is not the imported Untitled fallback");
+  applyImportToVault(vault, [blank], { folderMode: "csv_folders" });
+  assert.equal(findDuplicateImports(vault, [blank]).size, 1);
+});
+
+
+test("password whitespace stays significant during parsing and duplicate detection", async () => {
+  const vault = await KeePassVault.createNew(new Uint8Array(32).fill(9));
+  const csv = "name,url,username,password,note\nExample,https://example.test,user,secret,n\nExample,https://example.test,user, secret ,n\nExample,https://example.test,user,   ,n";
+  const rows = parseAndPreviewCsv(csv, "chrome").validEntries;
+  assert.deepEqual(rows.map(row => row.password), ["secret", " secret ", "   "]);
+  assert.equal(applyImportToVault(vault, rows, { folderMode: "csv_folders" }).importedCount, 3);
+  assert.equal(applyImportToVault(vault, rows, { folderMode: "csv_folders" }).skippedDuplicates, 3);
+});
+
+test("deleted credentials can be re-imported, including after encrypted reload", async () => {
+  const key = new Uint8Array(32).fill(10);
+  let vault = await KeePassVault.createNew(key);
+  const row = { id: "deleted", title: "Reimport me", username: "user", password: "secret", url: "https://example.test", notes: "note", totpSeed: "", folder: "", selected: true };
+  applyImportToVault(vault, [row], { folderMode: "csv_folders" });
+  vault.deleteEntry(vault.getEntries()[0].uuid);
+  assert.equal(findDuplicateImports(vault, [row]).size, 0);
+  vault = await KeePassVault.open(await vault.exportBinary(), key);
+  assert.equal(findDuplicateImports(vault, [row]).size, 0);
+  assert.equal(applyImportToVault(vault, [row], { folderMode: "csv_folders" }).importedCount, 1);
+  assert.equal(findDuplicateImports(vault, [row]).size, 1, "the re-imported live entry still prevents another duplicate");
+});
+
+test("duplicate detection excludes recycle-bin descendants using identity, not folder names", async () => {
+  const vault = await KeePassVault.createNew(new Uint8Array(32).fill(11));
+  const row = { id: "nested", title: "Nested recycled", username: "u", password: "p", url: "", notes: "", totpSeed: "", folder: "", selected: true };
+  const deleted = vault.createEntry({ ...row, groupUuid: "" });
+  vault.deleteEntry(deleted.uuid);
+  const recycled = vault.getEntries().find(entry => entry.uuid === deleted.uuid);
+  assert.ok(recycled, "the library soft-deletes into its recycle bin");
+  const nested = vault.createGroup("Nested", recycled.groupUuid);
+  vault.createEntry({ ...row, groupUuid: nested.uuid });
+  assert.equal(findDuplicateImports(vault, [row]).size, 0);
+  const liveGroup = vault.createGroup("Recycle Bin");
+  vault.createEntry({ ...row, groupUuid: liveGroup.uuid });
+  assert.equal(findDuplicateImports(vault, [row]).size, 1, "a live group named Recycle Bin still counts");
 });
