@@ -422,6 +422,19 @@ button.group-item {
   color: var(--accent);
 }
 
+.entry-history-dialog {
+  color: var(--ink-strong);
+  margin: auto;
+  max-width: 680px;
+  overflow-wrap: anywhere;
+}
+
+.entry-history-dialog::backdrop { background: rgba(0, 0, 0, 0.75); }
+.entry-history-reveal { display: flex; gap: 0.5rem; margin: 1rem 0; }
+.entry-history-fields > div { border-bottom: 1px solid var(--line); padding: 0.75rem 0; }
+.entry-history-fields dt { font-weight: 600; }
+.entry-history-fields dd { margin: 0.25rem 0 0; white-space: pre-wrap; }
+
 /* Auth Cards */
 .auth-container {
   display: flex;

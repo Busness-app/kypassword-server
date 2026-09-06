@@ -7,6 +7,7 @@ import { generateTOTP } from "../lib/totp";
 import { PasswordGenerator } from "../components/PasswordGenerator";
 import { DevicePairingModal } from "../components/DevicePairingModal";
 import { HistoryModal } from "../components/HistoryModal";
+import { EntryHistoryModal } from "../components/EntryHistoryModal";
 import { CsvImportModal } from "../components/CsvImportModal";
 import {
   Folder,
@@ -69,6 +70,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
   const [showGenerator, setShowGenerator] = useState(false);
   const [showPairing, setShowPairing] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [showEntryHistory, setShowEntryHistory] = useState(false);
   const [showCsvImport, setShowCsvImport] = useState(false);
   const [importMessage, setImportMessage] = useState<string | null>(null);
   const [revealPassword, setRevealPassword] = useState(false);
@@ -133,6 +135,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
     }
   };
   useEffect(loadEditor, [vault, selectedEntry?.uuid]);
+  useEffect(() => { if (hidden) setShowEntryHistory(false); }, [hidden]);
 
   // Live TOTP ticker
   useEffect(() => {
@@ -167,7 +170,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
 
   const handleSaveEntry = () => {
     if (!selectedEntryUuid) return;
-    vault.updateEntry({
+    const changed = vault.updateEntry({
       uuid: selectedEntryUuid,
       title: editTitle,
       username: editUsername,
@@ -178,7 +181,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
       groupUuid: editGroupUuid,
       updatedAt: new Date(),
     });
-    onChanged();
+    if (changed) onChanged();
     setIsEditing(false);
     refreshVaultData();
   };
@@ -439,6 +442,9 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
                 </span>
               </div>
               <div style={{ display: "flex", gap: "0.5rem" }}>
+                {!isEditing ? <button className="btn btn-secondary" onClick={() => setShowEntryHistory(true)}>
+                  <History size={16} /> Entry History
+                </button> : null}
                 {recycledIds.has(selectedEntry.uuid) ? (
                   <button className="btn btn-primary" onClick={handleRestoreEntry}>Restore to vault</button>
                 ) : isEditing ? (
@@ -452,7 +458,7 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
                   </>
                 ) : (
                   <>
-                    <button className="btn btn-secondary" onClick={() => setIsEditing(true)}>
+                    <button className="btn btn-secondary" onClick={() => { loadEditor(); setIsEditing(true); }}>
                       Edit
                     </button>
                     <button className="btn btn-danger btn-sm" onClick={handleDeleteEntry} title="Delete">
@@ -680,6 +686,20 @@ export function VaultPage({ vault, vaultKey, vaultVersion, onSave, onExport, onR
       </main>
 
       {/* Modals */}
+      {showEntryHistory && selectedEntry && !hidden ? <EntryHistoryModal
+        key={selectedEntry.uuid}
+        vault={vault}
+        entryUuid={selectedEntry.uuid}
+        allowRestore={!recycledIds.has(selectedEntry.uuid)}
+        onClose={() => setShowEntryHistory(false)}
+        onRestored={() => {
+          onChanged();
+          setShowEntryHistory(false);
+          setRevealPassword(false);
+          refreshVaultData();
+        }}
+      /> : null}
+
       {showGenerator ? (
         <PasswordGenerator
           onSelect={(pw) => {

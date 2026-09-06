@@ -242,6 +242,67 @@ export class KeePassVault {
     return this.getGroups().filter(group => !recycled.has(group.uuid));
   }
 
+  public getEntryHistory(uuid: string) {
+    return (this.findEntry(uuid)?.history ?? []).map((entry, index) => ({
+      index, updatedAt: entry.times.lastModTime,
+    })).reverse();
+  }
+
+  public getEntryHistoryVersion(uuid: string, index: number) {
+    const entry = Number.isSafeInteger(index) ? this.findEntry(uuid)?.history[index] : undefined;
+    if (!entry) throw new Error("This entry version is no longer available.");
+    return {
+      fields: [...entry.fields].map(([name, value]) => ({
+        name,
+        value: typeof value === "string" ? value : value.getText(),
+        protected: value instanceof ProtectedValue || /^(password|otp|totp)$/i.test(name),
+      })),
+      attachments: [...entry.binaries.keys()],
+    };
+  }
+
+  public get entryHistoryEnabled(): boolean {
+    return this.db.meta.historyMaxItems !== 0 && this.db.meta.historyMaxSize !== 0;
+  }
+
+  private pushEntryHistory(entry: kdbxweb.KdbxEntry): void {
+    if (!this.entryHistoryEnabled) return;
+    entry.pushHistory();
+    const snapshot = entry.history[entry.history.length - 1];
+    // kdbxweb's copyFrom (also used by pushHistory) omits these native properties.
+    if (snapshot) {
+      snapshot.customData = structuredClone(entry.customData);
+      snapshot.qualityCheck = entry.qualityCheck;
+      snapshot.previousParentGroup = entry.previousParentGroup;
+    }
+    const limit = this.db.meta.historyMaxItems ?? 10;
+    // ponytail: match kdbxweb's count-based history rules; byte-budget pruning needs
+    // native historyMaxSize support before we can enforce it without guessing sizes.
+    if (limit >= 0 && entry.history.length > limit) entry.removeHistory(0, entry.history.length - limit);
+  }
+
+  public restoreEntryVersion(uuid: string, index: number): void {
+    const entry = this.findEntry(uuid);
+    if (!entry?.parentGroup || this.recycledGroupIds().has(entry.parentGroup.uuid.toString())) {
+      throw new Error("Restore the entry to the live vault before restoring a version.");
+    }
+    const version = Number.isSafeInteger(index) ? entry.history[index] : undefined;
+    if (!version) throw new Error("This entry version is no longer available.");
+    if (!this.entryHistoryEnabled) throw new Error("Entry history is disabled for this vault; the current version cannot be preserved.");
+    const identity = entry.uuid;
+    const locationChanged = entry.times.locationChanged;
+    const previousParentGroup = entry.previousParentGroup;
+    // Capture the version before pruning; the selected version may be the oldest.
+    this.pushEntryHistory(entry);
+    entry.copyFrom(version);
+    entry.customData = structuredClone(version.customData);
+    entry.qualityCheck = version.qualityCheck;
+    entry.uuid = identity;
+    entry.previousParentGroup = previousParentGroup;
+    entry.times.locationChanged = locationChanged;
+    entry.times.update();
+  }
+
   public restoreEntry(uuid: string): void {
     const entry = this.findEntry(uuid);
     const recycled = this.recycledGroupIds();
@@ -286,17 +347,26 @@ export class KeePassVault {
   }
 
   // Update an existing entry
-  public updateEntry(entry: VaultEntry): void {
+  public updateEntry(entry: VaultEntry): boolean {
     const e = this.findEntry(entry.uuid);
-    if (!e) return;
+    if (!e) return false;
 
-    e.fields.set("Title", entry.title);
-    e.fields.set("UserName", entry.username);
-    e.fields.set("Password", ProtectedValue.fromString(entry.password));
-    e.fields.set("URL", entry.url);
-    e.fields.set("Notes", entry.notes);
+    if (entryFieldText(e, "Title") === entry.title && entryFieldText(e, "UserName") === entry.username &&
+        entryFieldText(e, "Password") === entry.password && entryFieldText(e, "URL") === entry.url &&
+        entryFieldText(e, "Notes") === entry.notes &&
+        (entryFieldText(e, "otp") || entryFieldText(e, "TOTP")) === (entry.totpSeed || "") &&
+        (!entry.groupUuid || e.parentGroup?.uuid.toString() === entry.groupUuid)) return false;
+    this.pushEntryHistory(e);
+
+    const setField = (name: string, value: string) => e.fields.set(name,
+      name === "Password" || e.fields.get(name) instanceof ProtectedValue ? ProtectedValue.fromString(value) : value);
+    setField("Title", entry.title);
+    setField("UserName", entry.username);
+    setField("Password", entry.password);
+    setField("URL", entry.url);
+    setField("Notes", entry.notes);
     if (entry.totpSeed) {
-      e.fields.set("otp", entry.totpSeed);
+      setField(e.fields.has("otp") || !e.fields.has("TOTP") ? "otp" : "TOTP", entry.totpSeed);
     } else {
       e.fields.delete("otp");
       e.fields.delete("TOTP");
@@ -310,6 +380,7 @@ export class KeePassVault {
     }
 
     e.times.update();
+    return true;
   }
 
   public get recyclingEnabled(): boolean {
