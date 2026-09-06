@@ -180,6 +180,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/vault/history", s.withAuth(s.handleVaultHistory))
 	mux.HandleFunc("POST /api/vault/history/{id}/restore", s.withAuth(s.handleVaultHistoryRestore))
 	mux.HandleFunc("GET /api/vault/conflicts", s.withAuth(s.handleVaultConflicts))
+	mux.HandleFunc("GET /api/vault/conflicts/{id}", s.withAuth(s.handleVaultConflictDownload))
 	mux.HandleFunc("DELETE /api/vault/conflicts/{id}", s.withAuth(s.handleVaultConflictDiscard))
 
 	// Devices & Extension Pairing

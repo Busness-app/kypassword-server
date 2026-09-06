@@ -1,3 +1,5 @@
+import { ConflictComparison } from "./ConflictComparison";
+import type { KeePassVault } from "../lib/kdbx";
 import React, { useState, useEffect } from "react";
 import { getJSON, postJSON, deleteJSON, toErrorMessage } from "../lib/api";
 import { History, RotateCcw, AlertTriangle, Trash2, CheckCircle2 } from "lucide-react";
@@ -19,11 +21,14 @@ type ConflictEntry = {
 };
 
 type Props = {
+  recovery?: { vault: KeePassVault; vaultKey: Uint8Array; onRecovered: (uuid: string) => void };
+  allowRollback: boolean;
   onClose: () => void;
   onRestored: () => void;
 };
 
-export function HistoryModal({ onClose, onRestored }: Props) {
+export function HistoryModal({ onClose, onRestored, recovery, allowRollback }: Props) {
+  const [comparisonId, setComparisonId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"history" | "conflicts">("history");
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [conflicts, setConflicts] = useState<ConflictEntry[]>([]);
@@ -54,6 +59,7 @@ export function HistoryModal({ onClose, onRestored }: Props) {
   }, []);
 
   const restoreSnapshot = async (id: string) => {
+    if (!allowRollback || busyId !== null) return;
     if (!confirm(`Are you sure you want to rollback to snapshot ${id}? Current changes will be archived.`)) return;
     setBusyId(id);
     setMessage("");
@@ -70,6 +76,7 @@ export function HistoryModal({ onClose, onRestored }: Props) {
   };
 
   const discardConflict = async (id: string) => {
+    if (!allowRollback || busyId !== null) return;
     if (!confirm("Are you sure you want to discard this conflict upload?")) return;
     setBusyId(id);
     try {
@@ -99,13 +106,13 @@ export function HistoryModal({ onClose, onRestored }: Props) {
         <div style={{ display: "flex", gap: "0.5rem", borderBottom: "1px solid var(--line)", marginBottom: "1.5rem" }}>
           <button
             className={`nav-link-btn ${activeTab === "history" ? "active" : ""}`}
-            onClick={() => setActiveTab("history")}
+            onClick={() => { setComparisonId(null); setActiveTab("history"); }}
           >
             Snapshots ({history.length})
           </button>
           <button
             className={`nav-link-btn ${activeTab === "conflicts" ? "active" : ""}`}
-            onClick={() => setActiveTab("conflicts")}
+            onClick={() => { setComparisonId(null); setActiveTab("conflicts"); }}
           >
             Preserved Conflicts ({conflicts.length})
           </button>
@@ -124,7 +131,10 @@ export function HistoryModal({ onClose, onRestored }: Props) {
         ) : null}
         {error ? <p style={{ color: "var(--danger)", fontSize: "0.9rem" }}>{error}</p> : null}
 
-        {loading ? (
+        {comparisonId && recovery ? (
+          <ConflictComparison key={comparisonId} conflictId={comparisonId} current={recovery.vault} vaultKey={recovery.vaultKey}
+            onRecovered={recovery.onRecovered} onBack={() => setComparisonId(null)} />
+        ) : loading ? (
           <p style={{ color: "var(--ink-muted)" }}>Loading snapshots…</p>
         ) : activeTab === "history" ? (
           history.length === 0 ? (
@@ -155,7 +165,7 @@ export function HistoryModal({ onClose, onRestored }: Props) {
                   </div>
                   <button
                     className="btn btn-secondary btn-sm"
-                    disabled={busyId === h.id}
+                    disabled={busyId !== null || !allowRollback}
                     onClick={() => restoreSnapshot(h.id)}
                   >
                     <RotateCcw size={14} /> Rollback
@@ -192,13 +202,18 @@ export function HistoryModal({ onClose, onRestored }: Props) {
                     {new Date(c.timestamp).toLocaleString()} • Target Version: {c.expectedVersion}
                   </div>
                 </div>
+                <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+                <button className="btn btn-secondary btn-sm" disabled={busyId !== null || !recovery}
+                  title={!recovery ? "Unlock the vault to compare entries" : undefined}
+                  onClick={() => setComparisonId(c.id)}>Compare & Recover</button>
                 <button
                   className="btn btn-danger btn-sm"
-                  disabled={busyId === c.id}
+                  disabled={busyId !== null || !allowRollback}
                   onClick={() => discardConflict(c.id)}
                 >
                   <Trash2 size={14} /> Discard
                 </button>
+                </div>
               </div>
             ))}
           </div>

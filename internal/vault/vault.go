@@ -556,8 +556,38 @@ func (s *Store) ListConflicts(userID string) ([]ConflictEntry, error) {
 	return entries, nil
 }
 
+// Conflict IDs are filenames, never paths, even when supplied by an authenticated client.
+func validConflictID(id string) bool {
+	return id != "" && id != "." && id != ".." && !strings.ContainsAny(id, "/\\\x00")
+}
+
+// OpenConflict exposes only ciphertext within this user's conflict directory.
+func (s *Store) OpenConflict(userID, conflictID string) (io.ReadCloser, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if !validConflictID(conflictID) {
+		return nil, ErrNotFound
+	}
+	file, err := os.OpenInRoot(s.conflictsDir(userID), conflictID+".kdbx")
+	if os.IsNotExist(err) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		file.Close()
+		return nil, ErrNotFound
+	}
+	return file, nil
+}
+
 // DiscardConflict removes a conflict file.
 func (s *Store) DiscardConflict(userID, conflictID string) error {
+	if !validConflictID(conflictID) {
+		return ErrNotFound
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
