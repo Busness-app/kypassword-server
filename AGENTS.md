@@ -160,6 +160,13 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
 
 ## Child DOX Index
 
+- `frontend/src/lib/passwordReuse.ts`: browser-only exact nonempty password comparison
+  across `getLiveEntries()`, excluding the metadata recycle bin and descendants. Returns
+  UUID/count pairs, never persists or transmits the report. `VaultPage` refreshes after
+  applied edits, creation, deletion and import; the reuse filter spans all live folders
+  and still respects text search. Empty passwords are ignored; whitespace and case are
+  significant. `passwordReuse.test.ts` covers edits, deletion and encrypted reopening.
+
 - `frontend/src/lib/autoLock.ts` and `App.tsx`: per-tab vault idle locking defaults to five
   minutes; Security offers 1/5/15/30/60 minutes saved per browser. Check both wall and
   monotonic elapsed time before accepting activity, including focus/visibility resume.

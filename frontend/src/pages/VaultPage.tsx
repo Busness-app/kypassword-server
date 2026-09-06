@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from "react";
 import { KeePassVault, VaultEntry, VaultGroup } from "../lib/kdbx";
 import type { EntryDraft } from "../lib/lockedDraft";
 import type { SaveState } from "../lib/vaultSave";
+import { findReusedPasswords } from "../lib/passwordReuse";
 import { generateTOTP } from "../lib/totp";
 import { PasswordGenerator } from "../components/PasswordGenerator";
 import { DevicePairingModal } from "../components/DevicePairingModal";
@@ -49,6 +50,8 @@ export function VaultPage({ vault, vaultVersion, onSave, onExport, onReload, sav
   const [selectedEntryUuid, setSelectedEntryUuid] = useState<string | null>(initialDraft?.uuid ?? null);
   const pendingDraft = useRef(initialDraft);
   const [searchQuery, setSearchQuery] = useState("");
+  const [showReusedPasswords, setShowReusedPasswords] = useState(false);
+  const [reusedPasswords, setReusedPasswords] = useState<Map<string, number>>(new Map());
 
   // Editor State
   const [isEditing, setIsEditing] = useState(false);
@@ -79,6 +82,7 @@ export function VaultPage({ vault, vaultVersion, onSave, onExport, onReload, sav
     const ents = vault.getEntries();
     setGroups(grps);
     setEntries(ents);
+    setReusedPasswords(findReusedPasswords(vault));
     if (!selectedEntryUuid && ents.length > 0) {
       setSelectedEntryUuid(ents[0].uuid);
     }
@@ -211,6 +215,7 @@ export function VaultPage({ vault, vaultVersion, onSave, onExport, onReload, sav
   const filteredEntries = useMemo(() => {
     return entries.filter((e) => {
       const matchesGroup =
+        showReusedPasswords ? reusedPasswords.has(e.uuid) :
         selectedGroupUuid === "all" || e.groupUuid === selectedGroupUuid;
       const q = searchQuery.toLowerCase();
       const matchesSearch =
@@ -221,7 +226,7 @@ export function VaultPage({ vault, vaultVersion, onSave, onExport, onReload, sav
         e.notes.toLowerCase().includes(q);
       return matchesGroup && matchesSearch;
     });
-  }, [entries, selectedGroupUuid, searchQuery]);
+  }, [entries, selectedGroupUuid, searchQuery, showReusedPasswords, reusedPasswords]);
 
   return (
     <div className="vault-layout" style={hidden ? { display: "none" } : undefined}>
@@ -307,6 +312,18 @@ export function VaultPage({ vault, vaultVersion, onSave, onExport, onReload, sav
             </button>
           </div>
 
+          <label style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+            <input type="checkbox" checked={showReusedPasswords}
+              onChange={(event) => setShowReusedPasswords(event.target.checked)} />
+            Reused passwords ({reusedPasswords.size})
+          </label>
+          {showReusedPasswords ? (
+            <p style={{ fontSize: "0.8rem", color: "var(--ink-muted)" }}>
+              Across all live folders. Checked only in this browser after Apply Edits.
+              Change each affected account’s password on its website, then update the vault.
+            </p>
+          ) : null}
+
           {importMessage ? (
             <div
               style={{
@@ -350,7 +367,7 @@ export function VaultPage({ vault, vaultVersion, onSave, onExport, onReload, sav
         <ul className="entry-list">
           {filteredEntries.length === 0 ? (
             <li style={{ padding: "2.5rem 1rem", textAlign: "center", color: "var(--ink-muted)", fontSize: "0.9rem" }}>
-              <p style={{ marginBottom: "1rem" }}>No entries found.</p>
+              <p style={{ marginBottom: "1rem" }}>{showReusedPasswords ? "No reused passwords match this search." : "No entries found."}</p>
               <button
                 className="btn btn-secondary btn-sm"
                 style={{ margin: "0 auto" }}
@@ -368,6 +385,7 @@ export function VaultPage({ vault, vaultVersion, onSave, onExport, onReload, sav
               >
                 <div className="entry-title">
                   <span>{e.title || "Untitled"}</span>
+                  {reusedPasswords.has(e.uuid) ? <span className="badge badge-cyan">Shared by {reusedPasswords.get(e.uuid)} entries</span> : null}
                   {e.totpSeed ? <span className="badge badge-cyan">2FA</span> : null}
                 </div>
                 <div className="entry-subtitle">
