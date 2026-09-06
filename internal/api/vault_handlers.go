@@ -53,7 +53,17 @@ type VaultUploadRequest struct {
 }
 
 func (s *Server) handleVaultUpload(w http.ResponseWriter, r *http.Request, u users.User) {
-	// Support both JSON with Base64 KDBX or multipart/raw binary with headers
+	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 50<<20))
+	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			http.Error(w, "vault upload exceeds the 50 MiB limit", http.StatusRequestEntityTooLarge)
+		} else {
+			http.Error(w, "failed to read upload body", http.StatusBadRequest)
+		}
+		return
+	}
+	// Support both the existing JSON payload and raw binary with headers.
 	var expectedVersion int64 = 0
 	var kdbxData []byte
 	var pwEnv string
@@ -68,7 +78,7 @@ func (s *Server) handleVaultUpload(w http.ResponseWriter, r *http.Request, u use
 
 	if strings.Contains(r.Header.Get("Content-Type"), "application/json") {
 		var req VaultUploadRequest
-		if err := json.NewDecoder(io.LimitReader(r.Body, 50<<20)).Decode(&req); err != nil {
+		if err := json.Unmarshal(data, &req); err != nil {
 			http.Error(w, "invalid json payload: "+err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -84,11 +94,6 @@ func (s *Server) handleVaultUpload(w http.ResponseWriter, r *http.Request, u use
 		pwEnv = r.Header.Get("X-Password-Envelope")
 		recEnv = r.Header.Get("X-Recovery-Envelope")
 		devID = r.Header.Get("X-Device-ID")
-		data, err := io.ReadAll(io.LimitReader(r.Body, 50<<20))
-		if err != nil {
-			http.Error(w, "failed to read upload body", http.StatusBadRequest)
-			return
-		}
 		kdbxData = data
 	}
 

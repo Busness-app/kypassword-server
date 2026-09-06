@@ -160,6 +160,31 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
 
 ## Child DOX Index
 
+- `frontend/src/components/EntryAttachments.tsx` and `frontend/src/lib/kdbx.ts`:
+  entries support adding one file at a time (10 MiB maximum), downloading decrypted
+  copies and removing attachments. Reject duplicate names rather than overwrite.
+  Add/remove checkpoint native entry history and use ordinary autosave. Recycled entries
+  permit download only; controls are unavailable while editing fields. Stage binary hashing
+  outside the live database and check cancellation before mutation; lock, navigation,
+  entry/vault changes and entering edit mode cancel pending reads. Exports use native
+  binary cleanup, preserving references from live/recycled entries and retained history.
+  `attachments.test.ts` checks encrypted download/removal/restore, shared and protected
+  binaries, invalid/cancelled additions and cleanup with disabled history.
+  Reject additions before mutation above a 40 MiB vault-wide attachment budget, reserving
+  10 MiB below the server upload limit for other contents. Count unique referenced hashes
+  across live/recycled entries and history, plus per-reference base64 cost for inline binaries
+  and their pending checkpoint. Check after hashing so concurrent additions cannot bypass it.
+  Ordinary removal retains history; explicit removal of saved copies deletes that filename
+  from every history version. Clear attachment history removes only historical binaries,
+  keeping current files and password history. Both use autosave; export cleanup reclaims
+  unreferenced bytes. Tests reproduce budget overflow without mutation and recover an
+  imported >50 MiB vault with history enabled; shared copies in other entries survive.
+- `internal/api/vault_handlers.go`: read upload bodies with MaxBytesReader before any
+  mutation. Raw and JSON requests above 50 MiB receive 413; exactly 50 MiB is accepted.
+  LimitReader previously saved a truncated raw vault and returned 200. The streaming
+  regression in `vault_upload_limit_test.go` proves oversized uploads preserve the current
+  bytes/version and that a boundary-sized upload round-trips intact.
+
 - `frontend/src/components/EntryHistoryModal.tsx` and `frontend/src/lib/kdbx.ts`: Entry
   History reads native KeePass history in the unlocked browser. Changed Apply Edits
   checkpoints the previous complete entry; no-op edits add no history or save revision.
