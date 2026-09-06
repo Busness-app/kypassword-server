@@ -46,6 +46,7 @@ type Props = {
 export function VaultPage({ vault, vaultVersion, onSave, onExport, onReload, saveState, onChanged, onDraftChange, hidden, initialDraft }: Props) {
   const [groups, setGroups] = useState<VaultGroup[]>([]);
   const [selectedGroupUuid, setSelectedGroupUuid] = useState<string>("all");
+  const [recycledIds, setRecycledIds] = useState<Set<string>>(new Set());
   const [entries, setEntries] = useState<VaultEntry[]>([]);
   const [selectedEntryUuid, setSelectedEntryUuid] = useState<string | null>(initialDraft?.uuid ?? null);
   const pendingDraft = useRef(initialDraft);
@@ -78,13 +79,14 @@ export function VaultPage({ vault, vaultVersion, onSave, onExport, onReload, sav
   const [totpRemaining, setTotpRemaining] = useState<number>(30);
 
   const refreshVaultData = () => {
-    const grps = vault.getGroups();
+    const grps = vault.getLiveGroups();
     const ents = vault.getEntries();
     setGroups(grps);
     setEntries(ents);
+    setRecycledIds(new Set(vault.getRecycledEntries().map(entry => entry.uuid)));
     setReusedPasswords(findReusedPasswords(vault));
-    if (!selectedEntryUuid && ents.length > 0) {
-      setSelectedEntryUuid(ents[0].uuid);
+    if (!selectedEntryUuid) {
+      setSelectedEntryUuid(vault.getLiveEntries()[0]?.uuid ?? null);
     }
   };
 
@@ -188,20 +190,34 @@ export function VaultPage({ vault, vaultVersion, onSave, onExport, onReload, sav
       password: "",
       url: "",
       notes: "",
-      groupUuid: selectedGroupUuid === "all" ? groups[0]?.uuid || "" : selectedGroupUuid,
+      groupUuid: selectedGroupUuid === "all" || selectedGroupUuid === "recycle" ? groups[0]?.uuid || "" : selectedGroupUuid,
     });
     onChanged();
     refreshVaultData();
+    if (selectedGroupUuid === "recycle") setSelectedGroupUuid("all");
     setSelectedEntryUuid(newEntry.uuid);
     setIsEditing(true);
   };
 
   const handleDeleteEntry = () => {
-    if (!selectedEntryUuid || !confirm("Are you sure you want to delete this entry?")) return;
+    if (!selectedEntryUuid || !confirm("Move this entry to the Recycle Bin?")) return;
     vault.deleteEntry(selectedEntryUuid);
     onChanged();
     setSelectedEntryUuid(null);
     refreshVaultData();
+  };
+
+  const handleRestoreEntry = () => {
+    if (!selectedEntryUuid) return;
+    try {
+      vault.restoreEntry(selectedEntryUuid);
+      onChanged();
+      refreshVaultData();
+      setSelectedGroupUuid("all");
+      setShowReusedPasswords(false);
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "Unable to restore entry.");
+    }
   };
 
   const handleCreateGroup = () => {
@@ -215,8 +231,9 @@ export function VaultPage({ vault, vaultVersion, onSave, onExport, onReload, sav
   const filteredEntries = useMemo(() => {
     return entries.filter((e) => {
       const matchesGroup =
-        showReusedPasswords ? reusedPasswords.has(e.uuid) :
-        selectedGroupUuid === "all" || e.groupUuid === selectedGroupUuid;
+        selectedGroupUuid === "recycle" ? recycledIds.has(e.uuid) :
+        !recycledIds.has(e.uuid) && (showReusedPasswords ? reusedPasswords.has(e.uuid) :
+        selectedGroupUuid === "all" || e.groupUuid === selectedGroupUuid);
       const q = searchQuery.toLowerCase();
       const matchesSearch =
         !q ||
@@ -226,7 +243,7 @@ export function VaultPage({ vault, vaultVersion, onSave, onExport, onReload, sav
         e.notes.toLowerCase().includes(q);
       return matchesGroup && matchesSearch;
     });
-  }, [entries, selectedGroupUuid, searchQuery, showReusedPasswords, reusedPasswords]);
+  }, [entries, selectedGroupUuid, searchQuery, showReusedPasswords, reusedPasswords, recycledIds]);
 
   return (
     <div className="vault-layout" style={hidden ? { display: "none" } : undefined}>
@@ -250,9 +267,15 @@ export function VaultPage({ vault, vaultVersion, onSave, onExport, onReload, sav
             <span>All Items</span>
           </div>
           <span className="font-mono" style={{ fontSize: "0.75rem" }}>
-            {entries.length}
+            {entries.length - recycledIds.size}
           </span>
         </div>
+
+        <button type="button" className={`group-item ${selectedGroupUuid === "recycle" ? "active" : ""}`}
+          onClick={() => { if (canChangeEntry()) { setIsEditing(false); setSelectedEntryUuid(null); setSelectedGroupUuid("recycle"); setShowReusedPasswords(false); } }}>
+          <span style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}><Trash2 size={16} /> Recycle Bin</span>
+          <span>{recycledIds.size}</span>
+        </button>
 
         {groups.map((g) => (
           <div
@@ -313,10 +336,13 @@ export function VaultPage({ vault, vaultVersion, onSave, onExport, onReload, sav
           </div>
 
           <label style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
-            <input type="checkbox" checked={showReusedPasswords}
+            <input type="checkbox" disabled={selectedGroupUuid === "recycle"} checked={showReusedPasswords}
               onChange={(event) => setShowReusedPasswords(event.target.checked)} />
             Reused passwords ({reusedPasswords.size})
           </label>
+          {selectedGroupUuid === "recycle" ? <p style={{ fontSize: "0.8rem", color: "var(--ink-muted)" }}>
+            Deleted entries are kept here. Restore returns an entry to the vault’s top-level folder.
+          </p> : null}
           {showReusedPasswords ? (
             <p style={{ fontSize: "0.8rem", color: "var(--ink-muted)" }}>
               Across all live folders. Checked only in this browser after Apply Edits.
@@ -409,7 +435,9 @@ export function VaultPage({ vault, vaultVersion, onSave, onExport, onReload, sav
                 </span>
               </div>
               <div style={{ display: "flex", gap: "0.5rem" }}>
-                {isEditing ? (
+                {recycledIds.has(selectedEntry.uuid) ? (
+                  <button className="btn btn-primary" onClick={handleRestoreEntry}>Restore to vault</button>
+                ) : isEditing ? (
                   <>
                     <button className="btn btn-secondary" onClick={() => { loadEditor(); setIsEditing(false); }}>
                       Cancel

@@ -160,6 +160,13 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
 
 ## Child DOX Index
 
+- `frontend/src/lib/kdbx.ts` recycle helpers identify the bin and descendants by metadata
+  UUID. `VaultPage` excludes them from All Items and folder selectors and offers a read-only
+  Recycle Bin with Restore to vault (the top-level live group). Restore preserves entry UUID
+  and contents and uses ordinary autosave. Delete enables recycling even in imported vaults
+  with it disabled; repeated deletion of a recycled entry is a no-op. No permanent-delete UI.
+  `recycleBin.test.ts` verifies encrypted reopening, restoration and disabled-bin recovery.
+
 - `frontend/src/lib/passwordReuse.ts`: browser-only exact nonempty password comparison
   across `getLiveEntries()`, excluding the metadata recycle bin and descendants. Returns
   UUID/count pairs, never persists or transmits the report. `VaultPage` refreshes after

@@ -192,12 +192,36 @@ export class KeePassVault {
     return entries;
   }
 
-  // Recycle-bin entries remain browsable, but are not live credentials for import matching.
-  // Use the metadata UUID, not the localized/renameable group name, and include descendants.
-  public getLiveEntries(): VaultEntry[] {
+  private recycledGroupIds(): Set<string> {
     const recycleBin = this.db.meta.recycleBinUuid ? this.db.getGroup(this.db.meta.recycleBinUuid) : undefined;
-    const recycledGroups = new Set(recycleBin ? [...recycleBin.allGroups()].map(group => group.uuid.toString()) : []);
-    return this.getEntries().filter(entry => !recycledGroups.has(entry.groupUuid));
+    return new Set(recycleBin ? [...recycleBin.allGroups()].map(group => group.uuid.toString()) : []);
+  }
+
+  public getLiveEntries(): VaultEntry[] {
+    const recycled = this.recycledGroupIds();
+    return this.getEntries().filter(entry => !recycled.has(entry.groupUuid));
+  }
+
+  public getRecycledEntries(): VaultEntry[] {
+    const recycled = this.recycledGroupIds();
+    return this.getEntries().filter(entry => recycled.has(entry.groupUuid));
+  }
+
+  public getLiveGroups(): VaultGroup[] {
+    const recycled = this.recycledGroupIds();
+    return this.getGroups().filter(group => !recycled.has(group.uuid));
+  }
+
+  public restoreEntry(uuid: string): void {
+    const entry = this.findEntry(uuid);
+    const recycled = this.recycledGroupIds();
+    if (!entry?.parentGroup || !recycled.has(entry.parentGroup.uuid.toString())) {
+      throw new Error("This entry is not in the recycle bin.");
+    }
+    const destination = this.db.getDefaultGroup();
+    if (recycled.has(destination.uuid.toString())) throw new Error("No live vault folder is available.");
+    this.db.move(entry, destination);
+    entry.times.update();
   }
 
   // Create a new entry in a group
@@ -262,6 +286,9 @@ export class KeePassVault {
   public deleteEntry(uuid: string): void {
     const e = this.findEntry(uuid);
     if (e) {
+      // Always keep a recoverable copy, including files with recycling disabled.
+      if (e.parentGroup && this.recycledGroupIds().has(e.parentGroup.uuid.toString())) return;
+      this.db.createRecycleBin();
       this.db.remove(e);
     }
   }

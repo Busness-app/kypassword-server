@@ -438,11 +438,11 @@ export function applyImportToVault(
   const pending = selected.filter(item => !duplicates.has(item.id));
   const skippedDuplicates = selected.length - pending.length;
   if (pending.length === 0) return { importedCount: 0, skippedDuplicates, foldersCreated: [] };
-  const existingGroups = vault.getGroups();
+  const existingGroups = vault.getLiveGroups();
   const rootUuid = existingGroups[0]?.uuid || "";
 
   // Lowercase folder path ("work/projects") -> group uuid, so repeated segments
-  // across rows reuse one subgroup. getGroups() is pre-order, so parents land first.
+  // across rows reuse one subgroup. getLiveGroups() is pre-order, so parents land first.
   const pathByUuid = new Map<string, string>([[rootUuid, ""]]);
   const groupMap = new Map<string, string>();
   for (const g of existingGroups) {
