@@ -200,7 +200,10 @@ export function VaultPage({ vault, vaultVersion, onSave, onExport, onReload, sav
   };
 
   const handleDeleteEntry = () => {
-    if (!selectedEntryUuid || !confirm("Move this entry to the Recycle Bin?")) return;
+    if (!selectedEntryUuid) return;
+    const message = vault.recyclingEnabled ? "Move this entry to the Recycle Bin?" :
+      "Recycling is disabled for this vault. Permanently delete this entry from the current vault? Existing snapshots and backups may still contain it.";
+    if (!confirm(message)) return;
     vault.deleteEntry(selectedEntryUuid);
     onChanged();
     setSelectedEntryUuid(null);

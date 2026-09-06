@@ -282,13 +282,17 @@ export class KeePassVault {
     e.times.update();
   }
 
+  public get recyclingEnabled(): boolean {
+    return this.db.meta.recycleBinEnabled !== false;
+  }
+
   // Delete an entry
   public deleteEntry(uuid: string): void {
     const e = this.findEntry(uuid);
     if (e) {
-      // Always keep a recoverable copy, including files with recycling disabled.
+      // Preserve the imported file’s explicit retention policy.
       if (e.parentGroup && this.recycledGroupIds().has(e.parentGroup.uuid.toString())) return;
-      this.db.createRecycleBin();
+      if (this.recyclingEnabled) this.db.createRecycleBin();
       this.db.remove(e);
     }
   }

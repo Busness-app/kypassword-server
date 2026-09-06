@@ -31,7 +31,7 @@ test("recycled entries and descendants restore intact after encrypted reopening"
   assert.throws(() => restored.restoreEntry("missing"), /not in the recycle bin/);
 });
 
-test("delete keeps imported vaults recoverable even when recycling was disabled", async () => {
+test("delete honors disabled recycling without changing the imported vault policy", async () => {
   const key = new Uint8Array(32).fill(8);
   const original = await KeePassVault.createNew(key);
   const db = await Kdbx.load(await original.exportBinary(), new Credentials(ProtectedValue.fromString(
@@ -41,9 +41,10 @@ test("delete keeps imported vaults recoverable even when recycling was disabled"
   const entry = vault.createEntry({ title: "Keep", username: "", password: "p", url: "", notes: "", groupUuid: "" });
   vault.deleteEntry(entry.uuid);
   const reopened = await KeePassVault.open(await vault.exportBinary(), key);
-  assert.equal(reopened.getRecycledEntries()[0].uuid, entry.uuid);
-  reopened.restoreEntry(entry.uuid);
-  assert.equal(reopened.getLiveEntries()[0].password, "p");
+  assert.equal(reopened.getRecycledEntries().length, 0);
+  assert.equal(reopened.getLiveEntries().length, 0);
+  const exported = await Kdbx.load(await reopened.exportBinary(), db.credentials);
+  assert.equal(exported.meta.recycleBinEnabled, false);
 });
 
 test("CSV folders named Recycle Bin import into a live namesake", async () => {
@@ -53,3 +54,23 @@ test("CSV folders named Recycle Bin import into a live namesake", async () => {
   assert.equal(vault.getLiveEntries().length, 1);
   assert.equal(vault.getRecycledEntries().length, 0);
 });
+
+for (const reopenBetween of [false, true]) {
+  test(`successive distinct deletions keep the original bin (reopen=${reopenBetween})`, async () => {
+    const key = new Uint8Array(32).fill(6);
+    let vault = await KeePassVault.createNew(key);
+    const add = (title: string) => vault.createEntry({title, username: "", password: "p", url: "", notes: "", groupUuid: ""});
+    const first = add("First");
+    const second = add("Second");
+    const originalLiveGroups = vault.getLiveGroups().map(group => group.uuid);
+    vault.deleteEntry(first.uuid);
+    const bin = vault.getRecycledEntries()[0].groupUuid;
+    if (reopenBetween) vault = await KeePassVault.open(await vault.exportBinary(), key);
+    vault.deleteEntry(second.uuid);
+    const reopened = await KeePassVault.open(await vault.exportBinary(), key);
+    assert.deepEqual(new Set(reopened.getRecycledEntries().map(entry => entry.uuid)), new Set([first.uuid, second.uuid]));
+    assert.ok(reopened.getRecycledEntries().every(entry => entry.groupUuid === bin));
+    assert.equal(reopened.getLiveEntries().length, 0);
+    assert.deepEqual(reopened.getLiveGroups().map(group => group.uuid), originalLiveGroups);
+  });
+}
