@@ -21,10 +21,10 @@
     "@xmldom/xmldom": "^0.8.15"
   },
   "devDependencies": {
-    "@types/node": "^26.4.0",
+    "@types/node": "^26.4.1",
     "@types/qrcode": "^1.5.5",
     "@types/react": "^19.0.0",
-    "@types/react-dom": "^19.2.5",
+    "@types/react-dom": "^19.2.7",
     "@vitejs/plugin-react": "^6.1.1",
     "tsx": "4.23.13",
     "typescript": "^7.0.2",
