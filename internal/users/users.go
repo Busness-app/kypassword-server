@@ -25,7 +25,7 @@ const (
 	RoleUser  Role = "user"
 )
 
-// User represents a KyPassword user record.
+// User represents a KyVault user record.
 //
 // It holds no authentication material of any kind. KySignOn authenticates; this server
 // only records who an identity is and what they may do. The master password never

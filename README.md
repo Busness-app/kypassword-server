@@ -1,4 +1,4 @@
-# KyPassword Server
+# KyVault Server
 
 A self-hosted, zero-knowledge KeePass v4 vault and synchronisation server, with a web
 interface, mobile clients and browser extensions.
@@ -8,7 +8,7 @@ your passwords, and it holds nothing that could be used to authenticate as you.
 
 ## KySignOn is required
 
-**There is no local login.** Signing in to KyPassword means signing in to KySignOn; the
+**There is no local login.** Signing in to KyVault means signing in to KySignOn; the
 server has no password of its own to check, and no way to create an account.
 
 If KySignOn is unavailable, sign-in is unavailable. Your passwords are not — but the escape
@@ -31,7 +31,7 @@ Two secrets, doing different jobs:
 | | proves | held by |
 |---|---|---|
 | Your KySignOn password | who you are | KySignOn |
-| Your KyPassword master password | nothing — it decrypts your vault key | you, in your browser |
+| Your KyVault master password | nothing — it decrypts your vault key | you, in your browser |
 
 The master password is never sent to the server, not even as a derived verifier. Changing
 it re-wraps the vault key envelope in your browser; the KDBX itself is not re-encrypted.
@@ -94,23 +94,23 @@ over anything saved in `config/sso.json`. The admin UI will refuse to overwrite 
 
 | Variable | Required | Meaning |
 |---|---|---|
-| `KYPASSWORD_OIDC_ISSUER` | yes | e.g. `https://signon.example.com` |
-| `KYPASSWORD_OIDC_CLIENT_ID` | yes | client ID KySignOn issued for KyPassword |
-| `KYPASSWORD_OIDC_CLIENT_SECRET` | yes | the matching client secret |
-| `KYPASSWORD_OIDC_REDIRECT_URI` | no | defaults to `<scheme>://<host>/api/auth/oidc/callback` |
-| `KYPASSWORD_OIDC_AUTO_PROVISION` | no | defaults to `true` |
+| `KYVAULT_OIDC_ISSUER` | yes | e.g. `https://signon.example.com` |
+| `KYVAULT_OIDC_CLIENT_ID` | yes | client ID KySignOn issued for KyVault |
+| `KYVAULT_OIDC_CLIENT_SECRET` | yes | the matching client secret |
+| `KYVAULT_OIDC_REDIRECT_URI` | no | defaults to `<scheme>://<host>/api/auth/oidc/callback` |
+| `KYVAULT_OIDC_AUTO_PROVISION` | no | defaults to `true` |
 | `PORT` | no | defaults to `5877` |
 | `DATA_DIR` | no | defaults to `./data` — vaults, history, audit log |
 | `CONFIG_DIR` | no | defaults to `./config` — `users.json`, `sso.json`, pairing secret, audit key and chain state |
 | `RETENTION_DAYS` | no | defaults to `90` |
-| `KYPASSWORD_SCIM_TOKEN` | no | Dedicated random provisioning token, 32–512 characters; unset disables SCIM unless a restored `CONFIG_DIR/scim.token` exists |
+| `KYVAULT_SCIM_TOKEN` | no | Dedicated random provisioning token, 32–512 characters; unset disables SCIM unless a restored `CONFIG_DIR/scim.token` exists |
 | `PAIRING_SECRET` | no | generated into `CONFIG_DIR/pairing.secret` if unset |
 | `AUDIT_KEY` | no | exactly 32 bytes, as 64 hex characters or standard base64; generated into `CONFIG_DIR/audit.key` if unset |
-| `KYPASSWORD_BACKUP_DEPOSIT_INTERVAL` | no | Backup interval default; `24h`, `0` disables, otherwise whole seconds from `15m` to `8784h`; admin setting overrides it |
-| `KYPASSWORD_BACKUP_DIR` | no | Absolute local capsule directory; in Docker use `/kypassword/data/backups` inside the mounted volume |
-| `KYPASSWORD_BACKUP_KEEP` | no | Local retention count, default `7`, minimum `1` |
-| `KYPASSWORD_BACKUP_ALLOW_PRIVATE_RECOVERY` | no | Explicit private/CGNAT HTTPS destination opt-in, default `false`; loopback remains blocked |
-| `KYPASSWORD_DNS` | no | only with `docker-compose.lan-dns.yml`: the LAN resolver the container uses, for a KyRecovery whose name exists only on your network |
+| `KYVAULT_BACKUP_DEPOSIT_INTERVAL` | no | Backup interval default; `24h`, `0` disables, otherwise whole seconds from `15m` to `8784h`; admin setting overrides it |
+| `KYVAULT_BACKUP_DIR` | no | Absolute local capsule directory; in Docker use `/kypassword/data/backups` inside the mounted volume |
+| `KYVAULT_BACKUP_KEEP` | no | Local retention count, default `7`, minimum `1` |
+| `KYVAULT_BACKUP_ALLOW_PRIVATE_RECOVERY` | no | Explicit private/CGNAT HTTPS destination opt-in, default `false`; loopback remains blocked |
+| `KYVAULT_DNS` | no | only with `docker-compose.lan-dns.yml`: the LAN resolver the container uses, for a KyRecovery whose name exists only on your network |
 
 `AUDIT_KEY` is 32 bytes exactly — not a minimum. A longer value is refused at startup
 rather than shortened, because a key half of which is silently discarded is a key two
@@ -123,8 +123,8 @@ All three OIDC values must be set together. A partially set environment is treat
 unset, so that a typo cannot silently produce a configuration that is half environment and
 half disk.
 
-With `KYPASSWORD_OIDC_AUTO_PROVISION=true` (the default), anyone KySignOn authenticates
-gets a KyPassword account and an empty vault on first sign-in. Set it to `false` to accept
+With `KYVAULT_OIDC_AUTO_PROVISION=true` (the default), anyone KySignOn authenticates
+gets a KyVault account and an empty vault on first sign-in. Set it to `false` to accept
 only accounts KySignOn has explicitly replicated — but then make sure replication is
 working first, or nobody can get in.
 
@@ -134,14 +134,14 @@ there is no local administrator who could fix it from the UI.
 ## Upgrading
 
 A published-image install on the rolling tag updates with `docker compose pull && docker compose up -d`;
-the tag only ever moves to an image CI attested. An install pinned to a digest (`KYPASSWORD_IMAGE`
+the tag only ever moves to an image CI attested. An install pinned to a digest (`KYVAULT_IMAGE`
 in `.env`, as the restore runbook sets) gets nothing from `pull`: re-run the pin recipe in
 `docker-compose.yml` with the commit sha you want first, or delete that line to follow the tag again.
 A source install rebuilds with `docker compose up -d` after `git pull` only once `docker-compose.build.yml`
 is in its `COMPOSE_FILE` chain; without it, `up -d` runs the published image instead. Installs from before
 the published image existed have no `COMPOSE_FILE` line at all, so before the first `up -d` on this
 revision run the snippet from `docker-compose.build.yml` once, then confirm the mode with
-`docker compose config --images`: `kypassword-server:local` means source, the `ghcr.io` name means
+`docker compose config --images`: `kyvault-server:local` means source, the `ghcr.io` name means
 published. Then read on:
 
 The audit chain also refuses to start in cases an older version started in, and the
@@ -154,7 +154,7 @@ The server refuses to start while any **active** account has no KySignOn identit
 names them:
 
 ```
-KyPassword now authenticates only through KySignOn, and 1 active account(s) have no KySignOn identity:
+KyVault now authenticates only through KySignOn, and 1 active account(s) have no KySignOn identity:
   - alice (id u1)
 ```
 
@@ -165,10 +165,10 @@ is done:
 
 ```sh
 # Bind a local account to its KySignOn identity.
-kypassword-server link-sso --username alice --sub <kysignon-user-id>
+kyvault-server link-sso --username alice --sub <kysignon-user-id>
 
 # Or retire an account that has no KySignOn identity. Its vault is kept.
-kypassword-server deactivate --username alice
+kyvault-server deactivate --username alice
 ```
 
 The KySignOn user ID is the value shown in the KySignOn admin user list, and is the same
@@ -184,10 +184,10 @@ from disk on the first write. There is nothing to migrate to.
 
 ## Replication from KySignOn
 
-Pair KyPassword as a system in KySignOn with the callback URL:
+Pair KyVault as a system in KySignOn with the callback URL:
 
 ```
-https://<your-kypassword-host>/api/sync/webhook
+https://<your-kyvault-host>/api/sync/webhook
 ```
 
 Keep this signed webhook URL unchanged. Standard SCIM uses a separate endpoint and
@@ -196,12 +196,12 @@ an existing signed KySignOn connection.
 
 Replication is keyed on the KySignOn user ID, which is the OIDC `sub`, so an account
 created by replication and one created at first sign-in converge on the same record. A
-deletion in KySignOn deactivates the KyPassword account and **keeps the vault**.
+deletion in KySignOn deactivates the KyVault account and **keeps the vault**.
 
 ## Standard SCIM provisioning
 
 **Admin → User Directory → SCIM Provisioning** shows the base URL and whether the
-provisioning token is configured. Set `KYPASSWORD_SCIM_TOKEN` to a random dedicated token
+provisioning token is configured. Set `KYVAULT_SCIM_TOKEN` to a random dedicated token
 of at least 32 characters (for example, generate one with `openssl rand -hex 32`) and
 restart the server. Docker Compose reads it from your deployment environment or `.env`.
 The effective token is included inside sealed recovery capsules as `config/scim.token`.
@@ -210,7 +210,7 @@ SCIM, unset the environment token and remove any restored `CONFIG_DIR/scim.token
 
 Configure the provisioning client with:
 
-- Base URL: `https://<your-kypassword-host>/scim/v2`
+- Base URL: `https://<your-kyvault-host>/scim/v2`
 - Authentication: the dedicated token as `Authorization: Bearer <token>`
 - Identity mapping: `externalId` must equal the user's **KySignOn OIDC subject**.
   Username and email never link an account to a vault.
@@ -236,7 +236,7 @@ Sign-in continues through KySignOn only.
 
 The shared `github.com/Busness-app/ky-primitives/scim` v0.6.0 client is verified against this
 receiver over TLS. The existing **signed webhook** is a separate supported interface:
-keep existing KySignOn `kypassword` connections on `/api/sync/webhook`. Moving one to
+keep existing KySignOn `kyvault` connections on `/api/sync/webhook`. Moving one to
 standard SCIM requires a sender using bearer authentication and server-returned IDs;
 changing only its callback URL is insufficient.
 
@@ -250,7 +250,7 @@ downloading, pinning, unpairing and changing the schedule need a session signed 
 back through KySignOn first.
 
 For local-only backups, pin the suite public key from the ceremony page and configure
-`KYPASSWORD_BACKUP_DIR`. One run seals once and writes every configured destination. The
+`KYVAULT_BACKUP_DIR`. One run seals once and writes every configured destination. The
 page shows local copies, the remote receipt, partial failures and the next attempt. Set the
 schedule there without restarting; failed attempts wait the same interval before retrying.
 Unpair removes only the remote URL/token, keeping the key, receipt and local copies. A
@@ -266,41 +266,41 @@ exchange is not: the recovery public key arrives over that connection, the depos
 out over it on every run, and receipts come back over it. Plain HTTP would let a man in the
 middle substitute their key at pairing or take the token. The server refuses `http://`, refuses
 redirects, and refuses loopback and reserved addresses. Private and CGNAT destinations require
-`KYPASSWORD_BACKUP_ALLOW_PRIVATE_RECOVERY=true` for your intended HTTPS host. A KyRecovery on
+`KYVAULT_BACKUP_ALLOW_PRIVATE_RECOVERY=true` for your intended HTTPS host. A KyRecovery on
 your own LAN behind a TLS proxy also needs its name to resolve inside the container: put the resolver in
-`KYPASSWORD_DNS` and start with the override file, which is kept separate because it replaces
+`KYVAULT_DNS` and start with the override file, which is kept separate because it replaces
 the container's resolvers for every lookup.
 
 The snippet appends `docker-compose.lan-dns.yml` to whatever `COMPOSE_FILE` chain `.env` already
 holds (build overlay, local override) and leaves the rest of the chain alone; the resolver
 sits next to it: the resolver comes from an exported
-`KYPASSWORD_DNS` (`export KYPASSWORD_DNS=<addr>`; fish: `set -x KYPASSWORD_DNS <addr>`) or, when that is unset, from the `KYPASSWORD_DNS` line
+`KYVAULT_DNS` (`export KYVAULT_DNS=<addr>`; fish: `set -x KYVAULT_DNS <addr>`) or, when that is unset, from the `KYVAULT_DNS` line
 already in `.env`; there is no default, the block refuses to guess. An exported value overrides
-`.env`, so re-running is a no-op only while `KYPASSWORD_DNS` is unset in your shell. One block for every install type:
+`.env`, so re-running is a no-op only while `KYVAULT_DNS` is unset in your shell. One block for every install type:
 
 ```bash
 (umask 077; touch .env \
   && cf=$({ grep '^COMPOSE_FILE=' .env || [ $? -eq 1 ]; } | tail -n1 | cut -d= -f2-) && cf=${cf:-docker-compose.yml} \
-  && dns=${KYPASSWORD_DNS:-$({ grep '^KYPASSWORD_DNS=' .env || [ $? -eq 1 ]; } | tail -n1 | cut -d= -f2-)} \
-  && : "${dns:?no resolver chosen: export KYPASSWORD_DNS=<your LAN resolver> (fish: set -x KYPASSWORD_DNS <addr>), then re-run this block}" \
+  && dns=${KYVAULT_DNS:-$({ grep '^KYVAULT_DNS=' .env || [ $? -eq 1 ]; } | tail -n1 | cut -d= -f2-)} \
+  && : "${dns:?no resolver chosen: export KYVAULT_DNS=<your LAN resolver> (fish: set -x KYVAULT_DNS <addr>), then re-run this block}" \
   && case ":$cf:" in *:docker-compose.lan-dns.yml:*) ;; *) cf="$cf:docker-compose.lan-dns.yml";; esac \
-  && t=$(mktemp ./.env.XXXXXX) && { grep -v -e '^COMPOSE_FILE=' -e '^KYPASSWORD_DNS=' .env || [ $? -eq 1 ]; } > "$t" \
-  && printf 'COMPOSE_FILE=%s\nKYPASSWORD_DNS=%s\n' "$cf" "$dns" >> "$t" && mv "$t" .env)
+  && t=$(mktemp ./.env.XXXXXX) && { grep -v -e '^COMPOSE_FILE=' -e '^KYVAULT_DNS=' .env || [ $? -eq 1 ]; } > "$t" \
+  && printf 'COMPOSE_FILE=%s\nKYVAULT_DNS=%s\n' "$cf" "$dns" >> "$t" && mv "$t" .env)
 docker compose up -d --force-recreate
 ```
 
 KyRecovery is a blind store. A capsule contains encrypted vault files and envelopes, history
 and conflicts, users and devices, active SSO and replication settings, and audit material.
 Only the custodian quorum can open it. Vault contents remain encrypted after recovery because
-KyPassword never held users' master passwords or plaintext vault keys.
+KyVault never held users' master passwords or plaintext vault keys.
 
 Offline maintenance commands are available while the daemon is stopped:
 
 ```sh
-kypassword-server backup-drill
-kypassword-server export-capsule --out kypassword.kycap
-kypassword-server deposit
-kypassword-server restore --capsule kypassword.kycap --to ./restored
+kyvault-server backup-drill
+kyvault-server export-capsule --out kyvault.kycap
+kyvault-server deposit
+kyvault-server restore --capsule kyvault.kycap --to ./restored
 ```
 
 `restore` reads custodian shares from standard input, never command-line arguments. The full
@@ -314,9 +314,9 @@ The wire protocol is documented in the KyRecovery repository; the shared formats
 ## Building and running
 
 ```sh
-go build -o kypassword-server ./cmd/server   # Go backend
+go build -o kyvault-server ./cmd/server   # Go backend
 cd frontend && npm install && npm run build  # web interface
-docker build -t kypassword-server:latest .   # or the container
+docker build -t kyvault-server:latest .   # or the container
 ```
 
 See `AGENTS.md` for the full verification suite and subsystem contracts.
@@ -327,7 +327,7 @@ This receiver requires KySignOn's `syncauth` v1 sender (verified in KySignOn mas
 `a2d5dbc59c0724fd96dc21a861f1e6ba33b38711`). Deploy compatible sender and receiver together;
 legacy bearer-only and timestamp-dot-body signatures are rejected. Keep the configured
 pairing/client secret; the secret is used as an HMAC key and no longer travels in a header.
-Use the suite type `kypassword` and callback `/api/sync/webhook`.
+Use the suite type `kyvault` and callback `/api/sync/webhook`.
 
 Completed event retries receive an acknowledgement without reapplying the directory change.
 Failed handlers may retry the same ID and payload; reused IDs with different content are

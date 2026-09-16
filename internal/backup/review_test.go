@@ -35,12 +35,12 @@ func TestConfigFromEnvRejectsOverlap(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, path := range []string{root, config, filepath.Join(config, "copies"), filepath.Join(data, "vaults"), filepath.Join(data, "audit", "copies"), filepath.Join(data, "drill"), filepath.Join(alias, "vaults", "copies")} {
-		t.Setenv("KYPASSWORD_BACKUP_DIR", path)
+		t.Setenv("KYVAULT_BACKUP_DIR", path)
 		if _, err := ConfigFromEnv(); err == nil {
 			t.Errorf("accepted overlap %s", path)
 		}
 	}
-	t.Setenv("KYPASSWORD_BACKUP_DIR", filepath.Join(root, "copies"))
+	t.Setenv("KYVAULT_BACKUP_DIR", filepath.Join(root, "copies"))
 	if _, err := ConfigFromEnv(); err != nil {
 		t.Fatal(err)
 	}

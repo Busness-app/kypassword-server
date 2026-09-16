@@ -1,20 +1,20 @@
-**Repo:** kypassword-server
-**PR:** #25 — https://github.com/Busness-app/kypassword-server/pull/25
-**PR:** #26 — https://github.com/Busness-app/kypassword-server/pull/26
-**PR:** #24 — https://github.com/Busness-app/kypassword-server/pull/24 (Phase A merged)
-**PR:** #23 — https://github.com/Busness-app/kypassword-server/pull/23 (original plan merged)
-**Worktree:** /home/yoshi/busness.app/kypassword-server (branch feat/verified-directory-auth)
+**Repo:** kyvault-server
+**PR:** #25 — https://github.com/Busness-app/kyvault-server/pull/25
+**PR:** #26 — https://github.com/Busness-app/kyvault-server/pull/26
+**PR:** #24 — https://github.com/Busness-app/kyvault-server/pull/24 (Phase A merged)
+**PR:** #23 — https://github.com/Busness-app/kyvault-server/pull/23 (original plan merged)
+**Worktree:** /home/yoshi/busness.app/kyvault-server (branch feat/verified-directory-auth)
 
 # Post 289 implementation plan: recoveryclient, then authentication
 
-Updated 2026-09-05. Owner: marigold. MySlop folder: `kypassword-kyrecovery-deposit`;
+Updated 2026-09-05. Owner: marigold. MySlop folder: `kyvault-kyrecovery-deposit`;
 claim: post 298. This document replaces the previous plan, including its completed Phase A
 checklists, obsolete library gates, and proposed token re-encryption. This turn produces a
 plan only; implementation, PR submission, and deployment are subsequent work.
 
 ## Verified baseline and scope
 
-- Fetched KyPassword `origin/master` and local HEAD both resolve to
+- Fetched KyVault `origin/master` and local HEAD both resolve to
   `1259b5da623365fe076bc1d4d167a655b0fc53b3`; checkout was clean before this plan edit.
 - Phase A is merged: LAN DNS override, restore runbook, fresh-admin gate, POST export and
   session-bound CSRF checks exist. Preserve them.
@@ -24,7 +24,7 @@ plan only; implementation, PR submission, and deployment are subsequent work.
 - KySignOn's locally fetched `origin/master`, `a2d5dbc59c0724fd96dc21a861f1e6ba33b38711`,
   imports recoveryclient in `internal/backup/adapter.go`. The old first-consumer gate is
   satisfied. Re-fetch reference repositories before implementation; this is a snapshot.
-- KyPassword uses file stores. Keep existing `Snapshot` methods for vaults, users, devices,
+- KyVault uses file stores. Keep existing `Snapshot` methods for vaults, users, devices,
   SSO and audit. No SQL database, SQLiteSnapshot, or server-side KDBX decryption belongs here.
 - Two reviewable changes: PR B completes backup adoption; a separate PR C adopts signed
   sync and verified OIDC. Preserve existing worktrees; create implementation branches from
@@ -51,7 +51,7 @@ Files: `go.mod`, `go.sum`, `internal/backup/state.go`, a small adapter file and 
   string or zero; use presence-aware fields for new settings. Delete of a missing key is
   harmless. Unknown keys fail explicitly rather than disappearing.
 - [ ] Preserve existing AES-GCM Sealer bytes: direct 32-byte token key, nonce prefix,
-  RawStdEncoding, additional data `kypassword:kyrecovery_token`. Wrap the existing functions
+  RawStdEncoding, additional data `kyvault:kyrecovery_token`. Wrap the existing functions
   to satisfy Seal/Open; do not switch to the library's HKDF sealer or rewrite old tokens.
   Opening never creates a missing token key. New pairing may create it.
 - [ ] Keep mutex-protected read/modify/temp-file/rename persistence at 0600. Library lifecycle
@@ -75,8 +75,8 @@ Files: `internal/backup/{backup,state,client,drill}.go`, adapter and focused tes
 - [ ] Use recoveryclient pairing, key pin, Seal, Run, Outcome, local copies, schedule, Drill,
   ReadShares and Restore. Delete superseded protocol/crypto lifecycle code and tests that
   merely duplicate the library; retain product compatibility and integration checks.
-- [ ] Keep `kypassword` as Payload.ServiceName, RunConfig.AppName and restore expected service.
-  `KyPassword` is only the display name sent alongside the explicit pairing service name.
+- [ ] Keep `kyvault` as Payload.ServiceName, RunConfig.AppName and restore expected service.
+  `KyVault` is only the display name sent alongside the explicit pairing service name.
   RunConfig.DataDir must be CONFIG_DIR, where recovery.pub already lives. Drill scratch is
   under DATA_DIR; these two directory roles are different.
 - [ ] Convert Collector output to library Payload using the existing locked snapshots.
@@ -94,7 +94,7 @@ Files: `internal/backup/{backup,state,client,drill}.go`, adapter and focused tes
   missing recipe data fails; it must not suppress audit or vault checks. Handle valid
   empty instances explicitly. Serialize drills; scratch is owner-only and removed on error.
 - [ ] Preserve actual restore validation. v0.5.1 Restore extracts and prints information but
-  returns only error: it does not invoke KyPassword checks or return the opened manifest.
+  returns only error: it does not invoke KyVault checks or return the opened manifest.
   After successful library Restore, run retained fixed product checks against restored
   files before reporting success. Buffer success output until checks pass. Do not parse
   display output or treat an unverified manifest as authenticated. Drill remains the path
@@ -114,15 +114,15 @@ Files: `cmd/server/main.go`, `internal/api/{server,backup_handlers,backup_freshn
 `frontend/src/components/AdminBackup.tsx`, existing frontend API helpers if necessary,
 `.env.example`, `docker-compose.yml`, README and `docs/RESTORE.md`.
 
-- [ ] Wire KYPASSWORD_BACKUP_DIR (absolute path or disabled), BACKUP_KEEP (default 7, >=1),
-  BACKUP_ALLOW_PRIVATE_RECOVERY (explicit boolean, default false), all with KYPASSWORD_
+- [ ] Wire KYVAULT_BACKUP_DIR (absolute path or disabled), BACKUP_KEEP (default 7, >=1),
+  BACKUP_ALLOW_PRIVATE_RECOVERY (explicit boolean, default false), all with KYVAULT_
   prefix. Keep BACKUP_DEPOSIT_INTERVAL duration syntax/default 24h; validate off or whole
   seconds in [900,31622400] before using it as the library Interval default. Persisted admin
   interval overrides the environment and takes effect without restart.
 - [ ] Preserve HTTPS, no redirects, and forbidden-address checks through library Options.
   Private-network opt-in is audited and names the correct product variable in errors.
   Pass new variables through compose; local backup directory must be on a mounted volume.
-  Keep DNS confined to the existing optional override and KYPASSWORD_DNS.
+  Keep DNS confined to the existing optional override and KYVAULT_DNS.
 - [ ] Add POST `/api/backup/pin-key`, DELETE `/api/backup/pairing`, PUT
   `/api/backup/schedule`; keep existing routes. Pair, pin, unpair, schedule, deposit and
   export require fresh admin plus session CSRF. Drill requires admin plus CSRF; status is
@@ -197,8 +197,8 @@ retry behavior. These are implementation gates, not reasons to delay the backup 
 
 - [ ] After each implementation phase, run focused meaningful integration tests; at PR B/C
   completion run root `gofmt -l .` (empty), `go vet ./...`, `go test -race ./...`,
-  `go build -o ./kypassword-server ./cmd/server`, frontend `npm test && npm run build`,
-  `docker build -t kypassword-server:latest .`, `govulncheck ./...`, and frontend
+  `go build -o ./kyvault-server ./cmd/server`, frontend `npm test && npm run build`,
+  `docker build -t kyvault-server:latest .`, `govulncheck ./...`, and frontend
   `npm audit --audit-level=high`. Validate base/override compose config as well.
 - [ ] DOX: update root and backup AGENTS.md with actual ownership, private-recovery policy,
   validation, settings and route behavior. Update root replication/auth contracts with PR C.
@@ -212,7 +212,7 @@ retry behavior. These are implementation gates, not reasons to delay the backup 
 ## Live proof after implementation
 
 Preserve deployment volume, issuer, recovery key and pairing. Use the intended homelab's
-explicit private-recovery switch and LAN override with KYPASSWORD_DNS=192.168.1.1;
+explicit private-recovery switch and LAN override with KYVAULT_DNS=192.168.1.1;
 source deployment uses `up -d --build`. Verify readiness and unchanged pinned key ID,
 then deposit without re-pairing. Record deployed SHA, capsule ID, digest, receipt time and
 local-copy result. KyRecovery endpoint: https://kyrecovery.urlxl.us; compare its key fingerprint
@@ -235,7 +235,7 @@ implementation process is running in the background.
 
 The plan has now been implemented in two ready PRs:
 
-- PR #25: https://github.com/Busness-app/kypassword-server/pull/25
+- PR #25: https://github.com/Busness-app/kyvault-server/pull/25
   (`feat/recoveryclient`, code head `115d6048cf0fa2c5766cfd7307000731dca1d9d1`).
   recoveryclient v0.5.1 owns pairing/deposit/sealing and recovery orchestration;
   the adapter preserves the existing disk schema, direct AES-GCM token wrapping,
@@ -243,7 +243,7 @@ The plan has now been implemented in two ready PRs:
   pin/unpair UI, partial-result reporting, drill validation and the private-material
   guard are implemented. Genuine old-code pairing and v0.4.1 capsule fixtures prove
   restart and restore compatibility with synthetic data.
-- PR #26: https://github.com/Busness-app/kypassword-server/pull/26
+- PR #26: https://github.com/Busness-app/kyvault-server/pull/26
   (`feat/verified-directory-auth`, combined code head
   `29cb1de08dee737cfdb4bd538687384f4848228f`).
   Signed sync requires syncauth verification, preserves retries after failed mutations,

@@ -16,13 +16,13 @@ import (
 	"time"
 
 	"github.com/Busness-app/ky-primitives/oidcverify"
-	"github.com/Busness-app/kypassword-server/internal/audit"
-	"github.com/Busness-app/kypassword-server/internal/backup"
-	"github.com/Busness-app/kypassword-server/internal/devices"
-	"github.com/Busness-app/kypassword-server/internal/sso"
-	kysync "github.com/Busness-app/kypassword-server/internal/sync"
-	"github.com/Busness-app/kypassword-server/internal/users"
-	"github.com/Busness-app/kypassword-server/internal/vault"
+	"github.com/Busness-app/kyvault-server/internal/audit"
+	"github.com/Busness-app/kyvault-server/internal/backup"
+	"github.com/Busness-app/kyvault-server/internal/devices"
+	"github.com/Busness-app/kyvault-server/internal/sso"
+	kysync "github.com/Busness-app/kyvault-server/internal/sync"
+	"github.com/Busness-app/kyvault-server/internal/users"
+	"github.com/Busness-app/kyvault-server/internal/vault"
 )
 
 type Session struct {
@@ -84,7 +84,7 @@ type Config struct {
 	AppVersion    string
 }
 
-// NewServer constructs the KyPassword Server.
+// NewServer constructs the KyVault Server.
 func NewServer(cfg Config) (*Server, error) {
 	if cfg.DataDir == "" {
 		cfg.DataDir = "./data"
@@ -437,7 +437,7 @@ func (s *Server) withAuth(next func(http.ResponseWriter, *http.Request, users.Us
 }
 
 // freshSessionWindow is how recently an admin must have signed in to move or expose backup
-// material. KyPassword has no password of its own to re-prompt for, so a stale admin is sent
+// material. KyVault has no password of its own to re-prompt for, so a stale admin is sent
 // back through KySignOn instead.
 const freshSessionWindow = 10 * time.Minute
 

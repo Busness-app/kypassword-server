@@ -1,17 +1,17 @@
-# KyPassword adopts KyRecovery pairing and sealed deposits
+# KyVault adopts KyRecovery pairing and sealed deposits
 
-Plan, 2026-09-04. Repo `kypassword-server`, surveyed at `db42308` on `master`.
+Plan, 2026-09-04. Repo `kyvault-server`, surveyed at `db42308` on `master`.
 Implementation branch: `feat/kyrecovery-deposit`; suggested worktree:
 `.claude/worktrees/deposit`.
 
 ## Goal
 
 Add the suite-standard KyRecovery lifecycle: claim a pairing code, pin the suite recovery
-public key, seal a complete zero-knowledge KyPassword backup, deposit it on demand and on a
+public key, seal a complete zero-knowledge KyVault backup, deposit it on demand and on a
 schedule, export it for an operator, prove it through a restore drill, and restore it from
 custodian shares.
 
-This work must preserve KyPassword's central security property: the server still never sees a
+This work must preserve KyVault's central security property: the server still never sees a
 master password, plaintext vault key, or decrypted KDBX data. A recovery capsule protects the
 server-side encrypted artifacts and operational keys; it does not bypass a user's vault
 password or paper-recovery envelope.
@@ -23,12 +23,12 @@ password or paper-recovery envelope.
   `recoverykey`.
 - Product-side baseline: `ky_server_base/internal/backup`.
 - Hardened non-scaffold adaptation: the decisions in MySlop folder
-  `kypassword-kyrecovery-deposit`, plus the URL/token hardening already implemented in
+  `kyvault-kyrecovery-deposit`, plus the URL/token hardening already implemented in
   `kydns-server/internal/backup`.
-- KyPassword's local contracts and verification commands: `AGENTS.md` and
+- KyVault's local contracts and verification commands: `AGENTS.md` and
   `/home/yoshi/busness.app/AGENTS.md`.
 
-Copy the protocol behavior, not the scaffold's database assumptions. KyPassword has no SQL
+Copy the protocol behavior, not the scaffold's database assumptions. KyVault has no SQL
 database or server-side vault decryption key.
 
 ## Findings that change the port
@@ -53,15 +53,15 @@ database or server-side vault decryption key.
 5. The active OIDC client secret may also come from the environment and override `sso.json`.
    Serialize the active `sso.Store.Load()` value into the sealed payload; do not merely copy a
    possibly stale file.
-6. KyPassword has admin sessions but no step-up model and no server-side CSRF verifier. Use the
+6. KyVault has admin sessions but no step-up model and no server-side CSRF verifier. Use the
    existing `withAdmin` boundary and the frontend's existing `secureFetch` behavior. Adding a
    new global step-up or CSRF system is separate security work, not part of this port.
 7. `frontend/dist` is not tracked. Build it as a gate, but do not add generated assets.
 
 ## Fixed design decisions
 
-- The KyRecovery service name is the constant `kypassword`; the display/app name is
-  `KyPassword`. Do not derive the service name from operator-controlled branding: pairing pins
+- The KyRecovery service name is the constant `kyvault`; the display/app name is
+  `KyVault`. Do not derive the service name from operator-controlled branding: pairing pins
   it byte-for-byte and a later rename would make every deposit fail.
 - Read the application version from Go build information and fall back to `dev`; pass it into
   the API config so CLI and HTTP seals record the same value.
@@ -89,7 +89,7 @@ database or server-side vault decryption key.
   live-instance lock.
 - A restore drill proves capsule opening, path/mode safety, JSON readability, audit-chain
   integrity, and every current KDBX ciphertext checksum. It explicitly reports that it cannot
-  decrypt user vaults because KyPassword holds no plaintext vault key. Do not add a server-side
+  decrypt user vaults because KyVault holds no plaintext vault key. Do not add a server-side
   key merely to make the drill claim more.
 
 ## Capsule contents
@@ -158,7 +158,7 @@ Files: new `internal/backup/AGENTS.md`, `state.go`, `client.go`, `collector.go`,
    restore opening) and the hardened URL rules from KyDNS. Change imports and delete every SQL
    branch rather than carrying a speculative database interface.
 2. Implement one concrete pairing-state store for `CONFIG_DIR`. Encrypt/decrypt the token with
-   AES-GCM and domain-separated additional data `kypassword:kyrecovery_token`. Writes use
+   AES-GCM and domain-separated additional data `kyvault:kyrecovery_token`. Writes use
    mode `0600` and atomic rename; public and token keys use `ky-primitives/keyfile`.
 3. Implement `StorePairing`, `LoadPairing`, `Status`, and `LastDeposit` with distinct errors for
    never paired, missing pinned key, mismatched key, in-progress deposit, remote failure, and
@@ -166,8 +166,8 @@ Files: new `internal/backup/AGENTS.md`, `state.go`, `client.go`, `collector.go`,
 4. Build the capsule contents listed above from the live vault/audit stores and the small atomic
    config stores. Refuse missing required members, unsafe paths, duplicate paths, checksum
    failures, and capsule size-limit violations.
-5. Implement claim and deposit clients. Send `service_name: "kypassword"` and
-   `app_name: "KyPassword"`; require a nonempty token, valid public key, and valid k-of-n
+5. Implement claim and deposit clients. Send `service_name: "kyvault"` and
+   `app_name: "KyVault"`; require a nonempty token, valid public key, and valid k-of-n
    topology. Treat 200 and 201 deposits as success only after capsule ID, SHA-256 digest, and
    byte size match locally.
 6. Make deposits single-flight across scheduler, HTTP, and in-process CLI callers. Use one
@@ -198,7 +198,7 @@ Complete when `go test -race ./internal/backup` passes.
 Files: `cmd/server/main.go`, `cmd/server/main_test.go` (create if needed), and
 `internal/api/server.go`.
 
-1. Add `KYPASSWORD_BACKUP_DEPOSIT_INTERVAL`: default `24h`, `0` disables, any other value below
+1. Add `KYVAULT_BACKUP_DEPOSIT_INTERVAL`: default `24h`, `0` disables, any other value below
    15 minutes or any invalid/negative value refuses startup.
 2. Pass `DataDir`, `ConfigDir`, effective pairing secret, retention days, app version, and the
    backup interval into the server. The backup collector uses these effective values rather
@@ -279,7 +279,7 @@ new `cmd/server/backup.go`, and command tests.
 3. `export-capsule --out PATH` defaults to a filename-safe capsule ID plus `.kycap`, writes
    mode `0600`, and refuses to overwrite an existing file.
 4. `restore --capsule PATH --to DIR` peeks at the unverified manifest and requires service name
-   `kypassword` before asking for shares. Read exactly the manifest threshold from stdin—never
+   `kyvault` before asking for shares. Read exactly the manifest threshold from stdin—never
    argv, flags, or environment—then call `capsule.Open`, validate, and write into an empty target
    with restrictive modes.
 5. Print the authenticated capsule ID, creation time, app version, recovery key ID, and payload
@@ -316,8 +316,8 @@ gofmt -l .
 go vet ./...
 go test -race ./...
 (cd frontend && npm test && npm run build)
-go build -o ./kypassword-server ./cmd/server
-docker build -t kypassword-server:latest .
+go build -o ./kyvault-server ./cmd/server
+docker build -t kyvault-server:latest .
 govulncheck ./...
 (cd frontend && npm audit --audit-level=high)
 git diff --check
@@ -329,7 +329,7 @@ Then run two smoke checks:
    return 412 while ordinary login/vault flows still work.
 2. Pair and deposit against a real HTTPS KyRecovery instance, compare the returned receipt to
    the capsule, download it through KyRecovery, and restore it into an empty temporary root with
-   test custodian shares. Start KyPassword from that root and verify the audit chain, user list,
+   test custodian shares. Start KyVault from that root and verify the audit chain, user list,
    device list, and encrypted vault downloads. Opening a vault remains a separate client-side
    test with its real master password.
 
@@ -347,5 +347,5 @@ deployment-only step.
 - Stop if the effective OIDC or replication secret cannot be serialized without exposing it in
   an unsealed manifest or log. Secret metadata may be described; secret values belong only in
   capsule members.
-- Stop if a new KDBX-decryption path appears necessary. That would violate KyPassword's
+- Stop if a new KDBX-decryption path appears necessary. That would violate KyVault's
   zero-knowledge architecture; the drill must remain ciphertext- and envelope-aware instead.

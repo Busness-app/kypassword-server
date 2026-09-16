@@ -12,14 +12,15 @@ import (
 	"path/filepath"
 	"strconv"
 
+	"github.com/Busness-app/ky-primitives/capsule"
 	"github.com/Busness-app/ky-primitives/recoveryclient"
-	"github.com/Busness-app/kypassword-server/internal/audit"
-	"github.com/Busness-app/kypassword-server/internal/backup"
-	"github.com/Busness-app/kypassword-server/internal/devices"
-	"github.com/Busness-app/kypassword-server/internal/sso"
-	kysync "github.com/Busness-app/kypassword-server/internal/sync"
-	"github.com/Busness-app/kypassword-server/internal/users"
-	"github.com/Busness-app/kypassword-server/internal/vault"
+	"github.com/Busness-app/kyvault-server/internal/audit"
+	"github.com/Busness-app/kyvault-server/internal/backup"
+	"github.com/Busness-app/kyvault-server/internal/devices"
+	"github.com/Busness-app/kyvault-server/internal/sso"
+	kysync "github.com/Busness-app/kyvault-server/internal/sync"
+	"github.com/Busness-app/kyvault-server/internal/users"
+	"github.com/Busness-app/kyvault-server/internal/vault"
 )
 
 type offlineBackup struct {
@@ -70,7 +71,7 @@ func openOfflineBackup() (*offlineBackup, error) {
 		return fail(err)
 	}
 	state := backup.NewStateStore(configDir)
-	scimToken, err := kysync.LoadSCIMToken(configDir, os.Getenv("KYPASSWORD_SCIM_TOKEN"))
+	scimToken, err := kysync.LoadSCIMToken(configDir, os.Getenv("KYVAULT_SCIM_TOKEN"))
 	if err != nil {
 		return fail(err)
 	}
@@ -139,7 +140,11 @@ func runExport(offline *offlineBackup, args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	raw, manifest, err := backup.Seal(files, deps, recipe, offline.service.Collector.AppVersion, key)
+	serviceName, err := offline.service.State.ServiceName()
+	if err != nil {
+		return err
+	}
+	raw, manifest, err := backup.SealWithService(files, deps, recipe, offline.service.Collector.AppVersion, key, serviceName)
 	if err != nil {
 		return err
 	}
@@ -184,7 +189,31 @@ func runRestore(args []string, in io.Reader, out io.Writer) error {
 		return err
 	}
 	var message bytes.Buffer
-	if err := recoveryclient.Restore(*capsulePath, *target, backup.ServiceName, shares, &message); err != nil {
+	file, err := os.Open(*capsulePath)
+	if err != nil {
+		return fmt.Errorf("read capsule manifest: %w", err)
+	}
+	raw, err := io.ReadAll(io.LimitReader(file, capsule.MaxContainerBytes+1))
+	closeErr := file.Close()
+	if err != nil {
+		return fmt.Errorf("read capsule manifest: %w", err)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("read capsule manifest: %w", closeErr)
+	}
+	if int64(len(raw)) > capsule.MaxContainerBytes {
+		return fmt.Errorf("read capsule manifest: %w", capsule.ErrCapsuleTooLarge)
+	}
+	manifest, err := capsule.ReadUnverifiedManifest(raw)
+	if err != nil {
+		return fmt.Errorf("read capsule manifest: %w", err)
+	}
+	serviceName := backup.ServiceName
+	if manifest.ServiceName == backup.LegacyServiceName {
+		serviceName = backup.LegacyServiceName
+		fmt.Fprintln(out, "Notice: restoring a pre-rename KyPassword capsule.")
+	}
+	if err := recoveryclient.Restore(*capsulePath, *target, serviceName, shares, &message); err != nil {
 		return err
 	}
 	if err := backup.ValidateRestored(*target); err != nil {

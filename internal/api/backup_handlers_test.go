@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"github.com/Busness-app/ky-primitives/recoverykey"
-	"github.com/Busness-app/kypassword-server/internal/backup"
-	"github.com/Busness-app/kypassword-server/internal/users"
+	"github.com/Busness-app/kyvault-server/internal/backup"
+	"github.com/Busness-app/kyvault-server/internal/users"
 )
 
 type fakeRecovery struct {

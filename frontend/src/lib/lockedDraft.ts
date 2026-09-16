@@ -6,6 +6,10 @@ export type EntryDraft = {
 export type DraftMetadata = { version: number; dirty: boolean; entry: EntryDraft | null };
 export type LockedDraft = { iv: Uint8Array<ArrayBuffer>; ciphertext: ArrayBuffer };
 
+export function draftPointer(storage: Pick<Storage, "getItem">, userId: string): string | undefined {
+  return storage.getItem(`kyvault.draft:${userId}`) ?? storage.getItem(`kypassword.draft:${userId}`) ?? undefined;
+}
+
 export async function sealDraft(binary: ArrayBuffer, metadata: DraftMetadata, key: Uint8Array, account: string): Promise<LockedDraft> {
   const json = new TextEncoder().encode(JSON.stringify(metadata));
   const plain = new Uint8Array(4 + json.length + binary.byteLength);

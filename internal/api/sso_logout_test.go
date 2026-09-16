@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Busness-app/kypassword-server/internal/sso"
+	"github.com/Busness-app/kyvault-server/internal/sso"
 )
 
 // logoutFixture is a server bound to a mock issuer with one signed-in session.
@@ -26,7 +26,7 @@ func newLogoutFixture(t *testing.T, claims map[string]any) *logoutFixture {
 	srv, _ := newServerIn(t, dir)
 	idp := newMockIssuer(t, claims)
 	srv.oidcHTTP = idp.Client()
-	if err := srv.ssoStore.Save(sso.SSOSettings{Enabled: true, IssuerURL: idp.URL, ClientID: "kypassword-app", AutoProvision: true}); err != nil {
+	if err := srv.ssoStore.Save(sso.SSOSettings{Enabled: true, IssuerURL: idp.URL, ClientID: "kyvault-app", AutoProvision: true}); err != nil {
 		t.Fatal(err)
 	}
 	return &logoutFixture{srv: srv, idp: idp, dir: dir}
@@ -356,7 +356,7 @@ func TestSSOLoginRequiresSidWhenIssuerSupportsSessionLogout(t *testing.T) {
 	f.srv.sessMu.RLock()
 	sess := f.srv.sessions[cookie.Value]
 	f.srv.sessMu.RUnlock()
-	if sess.SSO.SessionID != "sid-1" || sess.SSO.Subject != "alice-sub" || sess.SSO.Issuer != f.idp.URL || sess.SSO.ClientID != "kypassword-app" || sess.SSO.IssuedAt.IsZero() {
+	if sess.SSO.SessionID != "sid-1" || sess.SSO.Subject != "alice-sub" || sess.SSO.Issuer != f.idp.URL || sess.SSO.ClientID != "kyvault-app" || sess.SSO.IssuedAt.IsZero() {
 		t.Errorf("session identity not recorded: %+v", sess.SSO)
 	}
 }
@@ -385,7 +385,7 @@ func TestSessionMintingRequiresRevocableIdentity(t *testing.T) {
 	f := newLogoutFixture(t, map[string]any{"sub": "alice-sub", "preferred_username": "alice", "sid": "sid-1"})
 	cookie := f.login(t)
 	user, _ := f.srv.users.GetBySSOSub("alice-sub")
-	for name, id := range map[string]sso.Identity{"empty": {}, "no subject": {Issuer: f.idp.URL, ClientID: "kypassword-app"}, "no issuer": {ClientID: "kypassword-app", Subject: "alice-sub"}} {
+	for name, id := range map[string]sso.Identity{"empty": {}, "no subject": {Issuer: f.idp.URL, ClientID: "kyvault-app"}, "no issuer": {ClientID: "kyvault-app", Subject: "alice-sub"}} {
 		if _, err := f.srv.startSessionWithToken(user.ID, id); err == nil {
 			t.Errorf("%s identity minted an unrevocable device session", name)
 		}

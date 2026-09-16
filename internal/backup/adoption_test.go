@@ -54,6 +54,34 @@ func TestLegacyPairingSurvivesLibraryWritesAndRestart(t *testing.T) {
 	if e != nil || after.Token != before.Token || after.URL != before.URL || after.Key.Public.ID() != before.Key.Public.ID() || after.Key.Threshold != 2 || after.Key.TotalShares != 3 {
 		t.Fatalf("restart lost pairing: %v", e)
 	}
+	if serviceName, e := s.ServiceName(); e != nil || serviceName != LegacyServiceName {
+		t.Fatalf("legacy pairing service name = %q, %v", serviceName, e)
+	}
+	collector := testCollector(t)
+	for name, contents := range original {
+		if e := os.WriteFile(filepath.Join(collector.State.dir, name), contents, 0600); e != nil {
+			t.Fatal(e)
+		}
+	}
+	collector.State = NewStateStore(collector.State.dir)
+	depositor := &recordingDepositor{}
+	service := Service{State: collector.State, Collector: collector, Client: depositor}
+	if _, e := service.Run(context.Background()); e != nil {
+		t.Fatalf("legacy deposit: %v", e)
+	}
+	manifest, e := capsule.ReadUnverifiedManifest(depositor.raw)
+	if e != nil || manifest.ServiceName != LegacyServiceName {
+		t.Fatalf("legacy capsule service = %q, %v", manifest.ServiceName, e)
+	}
+	local := t.TempDir()
+	legacyCopy := filepath.Join(local, recoveryclient.LocalPrefix(LegacyServiceName)+"old.kycap")
+	if e := os.WriteFile(legacyCopy, []byte("capsule"), 0600); e != nil {
+		t.Fatal(e)
+	}
+	status, e := (&Service{State: s, Config: Config{Directory: local}}).Status()
+	if e != nil || len(status.LocalCopies) != 1 || status.LocalCopies[0].Name != filepath.Base(legacyCopy) {
+		t.Fatalf("legacy local copies = %+v, %v", status.LocalCopies, e)
+	}
 	st, e = s.loadLocked()
 	if e != nil || valueOf(st.SealedToken) != token || st.LastDeposit.CapsuleID != receipt.CapsuleID {
 		t.Fatal("state changed unexpectedly")
@@ -73,8 +101,8 @@ func TestLegacyPairingSurvivesLibraryWritesAndRestart(t *testing.T) {
 	if _, e := os.Stat(s.tokenPath()); !errors.Is(e, os.ErrNotExist) {
 		t.Fatal("open recreated token key")
 	}
-	status, e := s.Status()
-	if e != nil || status.Error == "" {
+	statusAfter, e := s.Status()
+	if e != nil || statusAfter.Error == "" {
 		t.Fatal("missing token key not visible")
 	}
 }
@@ -229,7 +257,7 @@ func TestMalformedRecipeFailsClosed(t *testing.T) {
 	}
 }
 func TestDecryptGuardRejectsProbe(t *testing.T) {
-	if root := os.Getenv("KYPASSWORD_GUARD_PROBE"); root != "" {
+	if root := os.Getenv("KYVAULT_GUARD_PROBE"); root != "" {
 		guardtest.NoDecryptOutside(t, root, nil)
 		return
 	}
@@ -244,7 +272,7 @@ func TestDecryptGuardRejectsProbe(t *testing.T) {
 		}
 	}
 	cmd := exec.Command(os.Args[0], "-test.run=^TestDecryptGuardRejectsProbe$")
-	cmd.Env = append(os.Environ(), "KYPASSWORD_GUARD_PROBE="+dir)
+	cmd.Env = append(os.Environ(), "KYVAULT_GUARD_PROBE="+dir)
 	output, e := cmd.CombinedOutput()
 	if e == nil || !bytes.Contains(output, []byte("capsule.Open")) {
 		t.Fatalf("guard did not detect probe: %v %s", e, output)

@@ -14,8 +14,8 @@ import (
 
 	"github.com/Busness-app/ky-primitives/capsule"
 	"github.com/Busness-app/ky-primitives/recoveryclient"
-	"github.com/Busness-app/kypassword-server/internal/backup"
-	"github.com/Busness-app/kypassword-server/internal/users"
+	"github.com/Busness-app/kyvault-server/internal/backup"
+	"github.com/Busness-app/kyvault-server/internal/users"
 )
 
 const depositWriteBudget = 16 * time.Minute

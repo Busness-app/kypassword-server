@@ -43,7 +43,7 @@ jobs:
         run: go test -race -count=1 ./...
 
       - name: go build
-        run: go build -o /tmp/kypassword-server ./cmd/server
+        run: go build -o /tmp/kyvault-server ./cmd/server
 
   frontend:
     name: Frontend (Vite/React)
@@ -77,7 +77,7 @@ jobs:
           context: .
           push: false
           load: true
-          tags: kypassword-server:ci
+          tags: kyvault-server:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -86,7 +86,7 @@ jobs:
       - if: github.event_name == 'push' && github.ref == 'refs/heads/master'
         run: |
           set -euo pipefail
-          docker save kypassword-server:ci | gzip > tested-image.tar.gz
+          docker save kyvault-server:ci | gzip > tested-image.tar.gz
       - if: github.event_name == 'push' && github.ref == 'refs/heads/master'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -156,7 +156,7 @@ jobs:
         run: |
           set -euo pipefail
           name="ghcr.io/${GITHUB_REPOSITORY,,}"
-          docker tag kypassword-server:ci "$name:$GITHUB_SHA"
+          docker tag kyvault-server:ci "$name:$GITHUB_SHA"
           docker push "$name:$GITHUB_SHA"
           digest="$(docker buildx imagetools inspect "$name:$GITHUB_SHA" --format '{{.Manifest.Digest}}')"
           echo "name=$name" >> "$GITHUB_OUTPUT"

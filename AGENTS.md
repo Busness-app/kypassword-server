@@ -1,6 +1,6 @@
-# KyPassword Server
+# KyVault Server
 
-KyPassword Server is a zero-knowledge KeePass v4 management and synchronization server with web interface, mobile clients, and browser plugins.
+KyVault Server is a zero-knowledge KeePass v4 management and synchronization server with web interface, mobile clients, and browser plugins.
 
 ## Core Capabilities & Architecture
 
@@ -61,7 +61,7 @@ yourself adding one, the design has been misread.
 - Destructive backup actions require a recent KySignOn-authenticated session. Device-pairing
   tokens carry no authentication timestamp and cannot refresh that gate. Capsule export is
   POST-only and requires the session-bound CSRF token because it snapshots the whole service.
-- SSO settings come from `KYPASSWORD_OIDC_ISSUER`, `_CLIENT_ID`, `_CLIENT_SECRET`
+- SSO settings come from `KYVAULT_OIDC_ISSUER`, `_CLIENT_ID`, `_CLIENT_SECRET`
   (optional `_REDIRECT_URI`, `_AUTO_PROVISION`) and take precedence over
   `config/sso.json`. `PUT /api/admin/sso` answers 409 while they are set. Without an
   identity provider, or with an active account that has no `ssoSub`, the server
@@ -69,7 +69,7 @@ yourself adding one, the design has been misread.
 
 ## Replication
 
-KySignOn's sync engine dictates the wire format; KyPassword is the receiver and has no
+KySignOn's sync engine dictates the wire format; KyVault is the receiver and has no
 say in it. `POST /api/sync/webhook` receives:
 
 - a **bare SCIM 2.0 User resource** as the body — not an envelope with an `event` key
@@ -82,7 +82,7 @@ say in it. `POST /api/sync/webhook` receives:
   may retry. ID reuse with different content/type is rejected. Completion receipts are
   bounded and in memory for the signature window; restart durability needs persistent receipts.
 
-This was previously mismatched: KyPassword expected `{"event","user"}` and an
+This was previously mismatched: KyVault expected `{"event","user"}` and an
 `X-Sync-Signature` over the body only, so every event fell out of the switch and
 returned 200 having done nothing, while the bearer token made KySignOn record it as
 delivered. **Both sides looked healthy and no account was ever provisioned.** Any change
@@ -94,12 +94,12 @@ it treats 2xx as success, plus 404 on `user.deleted` and 409 on `user.created`. 
 `user.updated` is a delivery *failure* it will retry, so an update naming an unknown
 subject provisions the account when auto-provisioning is on and otherwise returns 200.
 
-For signed replication, configure suite type `kypassword` with callback
+For signed replication, configure suite type `kyvault` with callback
 `/api/sync/webhook`. Deploy the signed KySignOn sender with this receiver;
 legacy unsigned or timestamp-dot-body webhook requests are rejected.
 
 Standard Users-only SCIM uses `/scim/v2` and the shared `ky-primitives/scim` v0.6.0
-wire types. It is disabled unless `KYPASSWORD_SCIM_TOKEN` is set (32–512 characters).
+wire types. It is disabled unless `KYVAULT_SCIM_TOKEN` is set (32–512 characters).
 That dedicated bearer token grants directory access only; session, pairing and OIDC
 secrets are not SCIM credentials. The deployment token overrides a restored `CONFIG_DIR/scim.token`. Collect the effective
 token inside sealed capsules; it grants directory access but never user sessions. To disable
@@ -135,8 +135,8 @@ the user's, not the directory's.
 
 - Backend: `gofmt -l .` (must be empty), `go vet ./...`, `go test -race ./...`
 - Frontend: `npm test && npm run build` in `frontend/` (`build` is `tsc && vite build`, so it is the typecheck gate)
-- Daemon build: `go build -o ./kypassword-server ./cmd/server`
-- Docker build: `docker build -t kypassword-server:latest .`
+- Daemon build: `go build -o ./kyvault-server ./cmd/server`
+- Docker build: `docker build -t kyvault-server:latest .`
 - Dependency vulns: `govulncheck ./...` and `npm audit --audit-level=high` in `frontend/`
 
 All of the above run in CI on every push to `master` and every pull request, split
@@ -144,11 +144,11 @@ across six jobs in `.github/workflows/ci.yml`: `backend`, `frontend`, `docker`,
 `security`, `publish`, `promote`. Keep the workflow and this list in sync when either changes.
 `publish` and `promote` run only on a green push to `master`. `publish` pushes the exact
 image the `docker` job handed over as an artifact (no rebuild) to
-`ghcr.io/busness-app/kypassword-server:<commit sha>`, attests it and verifies the attestation pinned to this workflow on `master`.
+`ghcr.io/busness-app/kyvault-server:<commit sha>`, attests it and verifies the attestation pinned to this workflow on `master`.
 `promote` then moves `:latest` to that digest, only at the tip of `master`, and asserts the
 tag resolves to the attested digest. `docker-compose.yml` names the published image and never
 builds; source installs add `docker-compose.build.yml` to the `COMPOSE_FILE` chain in `.env`
-(overlay tags `kypassword-server:local`) so every compose command, `docs/RESTORE.md` included,
+(overlay tags `kyvault-server:local`) so every compose command, `docs/RESTORE.md` included,
 uses the local build.
 
 `.github/dependabot.yml` opens weekly grouped dependency PRs for Go modules, npm,
@@ -342,7 +342,7 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
   assertions alone cannot catch it, because they only check what was written.
 
   **This is a cross-product format.** KyAuth reads *and writes* envelopes
-  (`KyPasswordEnvelopeCrypto.kt`), and today it writes PBKDF2-HMAC-SHA256 at 600k
+  (`KyVaultEnvelopeCrypto.kt`), and today it writes PBKDF2-HMAC-SHA256 at 600k
   iterations. An envelope with no `kdf` field is PBKDF2 by definition, and
   `unwrapVaultKey` still reads that shape so a vault uploaded by an un-updated KyAuth
   remains openable. Remove the PBKDF2 path only once KyAuth writes Argon2id.

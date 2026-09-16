@@ -1,7 +1,7 @@
 name: kypassword-server
 
 services:
-  kypassword-server:
+  kyvault-server:
     # The published, attested image. `pull` moves to the newest one; `up` uses what is
     # present, otherwise pulls. This file never builds: a source build would occupy this
     # name with unattested bytes, so it lives in docker-compose.build.yml under a local tag.
@@ -14,19 +14,20 @@ services:
     # AND record your commit as its source, or the chain stops. The new .env is staged in this
     # directory and renamed atomically over the old one only if the filtered copy was written
     # in full, so a failed check, an unreadable .env or a short write never replaces your
-    # secrets. Re-run with a newer sha to move; delete the KYPASSWORD_IMAGE line to follow :latest
-    # again. A source install is unaffected: the build overlay's image wins over this pin.
+    # secrets. Re-run with a newer sha to move; delete the KYVAULT_IMAGE and KYPASSWORD_IMAGE
+    # lines to follow :latest again. A source install is unaffected: the build overlay's image
+    # wins over this pin.
     #   sha=<full commit sha you intend to run, e.g. $(git rev-parse origin/master)>
-    #   d=$(docker buildx imagetools inspect ghcr.io/busness-app/kypassword-server:$sha --format '{{.Manifest.Digest}}') \
-    #     && gh attestation verify "oci://ghcr.io/busness-app/kypassword-server@$d" --repo Busness-app/kypassword-server \
-    #          --cert-identity https://github.com/Busness-app/kypassword-server/.github/workflows/ci.yml@refs/heads/master \
-    #     && [ "$(gh attestation verify "oci://ghcr.io/busness-app/kypassword-server@$d" --repo Busness-app/kypassword-server \
-    #          --cert-identity https://github.com/Busness-app/kypassword-server/.github/workflows/ci.yml@refs/heads/master \
+    #   d=$(docker buildx imagetools inspect ghcr.io/busness-app/kyvault-server:$sha --format '{{.Manifest.Digest}}') \
+    #     && gh attestation verify "oci://ghcr.io/busness-app/kyvault-server@$d" --repo Busness-app/kyvault-server \
+    #          --cert-identity https://github.com/Busness-app/kyvault-server/.github/workflows/ci.yml@refs/heads/master \
+    #     && [ "$(gh attestation verify "oci://ghcr.io/busness-app/kyvault-server@$d" --repo Busness-app/kyvault-server \
+    #          --cert-identity https://github.com/Busness-app/kyvault-server/.github/workflows/ci.yml@refs/heads/master \
     #          --format json --jq '.[0].verificationResult.statement.predicate.buildDefinition.resolvedDependencies[0].digest.gitCommit')" = "$sha" ] \
-    #     && (umask 077; t=$(mktemp ./.env.XXXXXX) && touch .env && { grep -v '^KYPASSWORD_IMAGE=' .env || [ $? -eq 1 ]; } > "$t" \
-    #         && echo "KYPASSWORD_IMAGE=ghcr.io/busness-app/kypassword-server@$d" >> "$t" && mv "$t" .env) \
-    #     && grep -qxF "KYPASSWORD_IMAGE=ghcr.io/busness-app/kypassword-server@$d" .env
-    image: ${KYPASSWORD_IMAGE:-ghcr.io/busness-app/kypassword-server:latest}
+    #     && (umask 077; t=$(mktemp ./.env.XXXXXX) && touch .env && { grep -v '^KYVAULT_IMAGE=' .env || [ $? -eq 1 ]; } > "$t" \
+    #         && echo "KYVAULT_IMAGE=ghcr.io/busness-app/kyvault-server@$d" >> "$t" && mv "$t" .env) \
+    #     && grep -qxF "KYVAULT_IMAGE=ghcr.io/busness-app/kyvault-server@$d" .env
+    image: ${KYVAULT_IMAGE:-${KYPASSWORD_IMAGE:-ghcr.io/busness-app/kyvault-server:latest}}
     pull_policy: missing
     container_name: KyPassword-Server
     restart: unless-stopped
@@ -35,23 +36,23 @@ services:
 
     networks:
       kypost-net:
-        ipv4_address: ${KYPASSWORD_IP:-10.89.0.4}
+        ipv4_address: ${KYVAULT_IP:-10.89.0.4}
 
     ports:
-      - "${KYPASSWORD_BIND:-127.0.0.1}:5877:5877"
+      - "${KYVAULT_BIND:-127.0.0.1}:5877:5877"
 
     environment:
       PORT: 5877
       DATA_DIR: /kypassword/data
       CONFIG_DIR: /kypassword/config
       WEB_DIR: /app/frontend/dist
-      KYPASSWORD_SCIM_TOKEN: ${KYPASSWORD_SCIM_TOKEN:-}
+      KYVAULT_SCIM_TOKEN: ${KYVAULT_SCIM_TOKEN:-}
       RETENTION_DAYS: ${RETENTION_DAYS:-90}
       TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-127.0.0.1/32,10.89.0.0/24,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}
-      KYPASSWORD_BACKUP_DIR: ${KYPASSWORD_BACKUP_DIR:-}
-      KYPASSWORD_BACKUP_KEEP: ${KYPASSWORD_BACKUP_KEEP:-7}
-      KYPASSWORD_BACKUP_ALLOW_PRIVATE_RECOVERY: ${KYPASSWORD_BACKUP_ALLOW_PRIVATE_RECOVERY:-false}
-      KYPASSWORD_BACKUP_DEPOSIT_INTERVAL: ${KYPASSWORD_BACKUP_DEPOSIT_INTERVAL:-24h}
+      KYVAULT_BACKUP_DIR: ${KYVAULT_BACKUP_DIR:-}
+      KYVAULT_BACKUP_KEEP: ${KYVAULT_BACKUP_KEEP:-7}
+      KYVAULT_BACKUP_ALLOW_PRIVATE_RECOVERY: ${KYVAULT_BACKUP_ALLOW_PRIVATE_RECOVERY:-false}
+      KYVAULT_BACKUP_DEPOSIT_INTERVAL: ${KYVAULT_BACKUP_DEPOSIT_INTERVAL:-24h}
 
     volumes:
       - kypassword_data:/kypassword/data

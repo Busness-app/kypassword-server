@@ -1,6 +1,6 @@
 # Logging
 
-KyPassword must emit structured, privacy-safe application logs to standard
+KyVault must emit structured, privacy-safe application logs to standard
 output and standard error. It must not build or require a KySecurity-specific
 log database, log search system, or long-term retention service.
 

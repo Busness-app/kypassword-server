@@ -23,7 +23,7 @@ func chainOf(t *testing.T, s *Store) []auditchain.Record {
 }
 
 // The point of converging: an entry this server writes must verify under the
-// shared package, with no KyPassword-specific hashing involved.
+// shared package, with no KyVault-specific hashing involved.
 func TestEntriesVerifyUnderSharedPackage(t *testing.T) {
 	dir, keyDir := t.TempDir(), t.TempDir()
 	store, err := NewStore(dir, keyDir)

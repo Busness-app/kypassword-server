@@ -10,11 +10,11 @@ import (
 // signing in through KySignOn, which needs SSO configured first. Reading it from the
 // environment breaks that deadlock.
 const (
-	EnvIssuer        = "KYPASSWORD_OIDC_ISSUER"
-	EnvClientID      = "KYPASSWORD_OIDC_CLIENT_ID"
-	EnvClientSecret  = "KYPASSWORD_OIDC_CLIENT_SECRET"
-	EnvRedirectURI   = "KYPASSWORD_OIDC_REDIRECT_URI"
-	EnvAutoProvision = "KYPASSWORD_OIDC_AUTO_PROVISION"
+	EnvIssuer        = "KYVAULT_OIDC_ISSUER"
+	EnvClientID      = "KYVAULT_OIDC_CLIENT_ID"
+	EnvClientSecret  = "KYVAULT_OIDC_CLIENT_SECRET"
+	EnvRedirectURI   = "KYVAULT_OIDC_REDIRECT_URI"
+	EnvAutoProvision = "KYVAULT_OIDC_AUTO_PROVISION"
 )
 
 // SettingsFromEnv reads the identity provider from the environment. It reports false
@@ -47,6 +47,23 @@ func SettingsFromEnv() (SSOSettings, bool) {
 func (s *Store) EnvSourced() bool {
 	_, ok := SettingsFromEnv()
 	return ok
+}
+
+// LegacyEnvironment lists old product-prefixed variables without exposing their values.
+// Startup rejects them so a renamed deployment cannot silently use stale configuration.
+func LegacyEnvironment() []string {
+	var names []string
+	for _, entry := range os.Environ() {
+		name, _, _ := strings.Cut(entry, "=")
+		if strings.HasPrefix(name, "KYPASSWORD_") {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+func KyVaultEnvironmentName(name string) string {
+	return strings.Replace(name, "KYPASSWORD_", "KYVAULT_", 1)
 }
 
 func boolFromEnv(key string, fallback bool) bool {

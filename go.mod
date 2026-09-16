@@ -1,4 +1,4 @@
-module github.com/Busness-app/kypassword-server
+module github.com/Busness-app/kyvault-server
 
 go 1.26.6
 

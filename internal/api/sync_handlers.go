@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"strings"
 
-	kysync "github.com/Busness-app/kypassword-server/internal/sync"
-	"github.com/Busness-app/kypassword-server/internal/users"
+	kysync "github.com/Busness-app/kyvault-server/internal/sync"
+	"github.com/Busness-app/kyvault-server/internal/users"
 )
 
 // syncSecrets lists the secrets a replication request may be authenticated with, in
@@ -25,7 +25,7 @@ func (s *Server) syncSecrets() []string {
 	return out
 }
 
-// scimRole maps a KySignOn role onto a KyPassword role. Anything that is not literally
+// scimRole maps a KySignOn role onto a KyVault role. Anything that is not literally
 // "admin" is an ordinary user; an unrecognised role must never widen access.
 func scimRole(role string) users.Role {
 	if strings.EqualFold(role, "admin") {

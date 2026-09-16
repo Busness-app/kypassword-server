@@ -13,7 +13,7 @@ import (
 	"github.com/Busness-app/ky-primitives/scim"
 )
 
-// SCIMUser is the subset of a SCIM User resource KyPassword acts on.
+// SCIMUser is the subset of a SCIM User resource KyVault acts on.
 type SCIMUser struct {
 	// ID is the KySignOn user ID, which is also the OIDC `sub`. It is the only key an
 	// account is ever matched on.

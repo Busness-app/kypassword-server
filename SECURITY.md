@@ -1,10 +1,10 @@
 # Security Policy
 
-Report vulnerabilities through [GitHub Security Advisories](https://github.com/Busness-app/kypassword-server/security/advisories), not a public issue. Include the affected version, impact, and reproduction steps.
+Report vulnerabilities through [GitHub Security Advisories](https://github.com/Busness-app/kyvault-server/security/advisories), not a public issue. Include the affected version, impact, and reproduction steps.
 
 ## Trust boundaries
 
-- KySignOn is the only authenticator and directory. KyPassword stores no password verifier.
+- KySignOn is the only authenticator and directory. KyVault stores no password verifier.
 - KDBX encryption and vault-key envelopes are created and opened in clients. The server stores
   ciphertext and cannot read credentials.
 - The audit log is HMAC-chained and anchored outside its data directory. Losing `audit.key` or
@@ -32,7 +32,7 @@ password, offline vault key, or paper-recovery path.
 
 ## Deployment
 
-Terminate TLS before exposing KyPassword. Session cookies are marked `Secure` only when the
+Terminate TLS before exposing KyVault. Session cookies are marked `Secure` only when the
 request arrives over TLS or the deployment edge supplies `X-Forwarded-Proto: https`. Protect
 `DATA_DIR` and `CONFIG_DIR` with owner-only filesystem permissions and back them up together.
 Treat `PAIRING_SECRET`, `AUDIT_KEY`, OIDC client secrets, KyRecovery state, exported capsules,

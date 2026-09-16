@@ -12,11 +12,11 @@ import (
 	"time"
 
 	"github.com/Busness-app/ky-primitives/capsule"
-	"github.com/Busness-app/kypassword-server/internal/audit"
-	"github.com/Busness-app/kypassword-server/internal/devices"
-	"github.com/Busness-app/kypassword-server/internal/sso"
-	"github.com/Busness-app/kypassword-server/internal/users"
-	"github.com/Busness-app/kypassword-server/internal/vault"
+	"github.com/Busness-app/kyvault-server/internal/audit"
+	"github.com/Busness-app/kyvault-server/internal/devices"
+	"github.com/Busness-app/kyvault-server/internal/sso"
+	"github.com/Busness-app/kyvault-server/internal/users"
+	"github.com/Busness-app/kyvault-server/internal/vault"
 )
 
 type Collector struct {
@@ -58,8 +58,12 @@ func (c Collector) Collect() ([]capsule.File, map[string]any, map[string]any, er
 		return nil, nil, nil, err
 	}
 
+	serviceName, err := c.State.ServiceName()
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	manifest, _ := json.MarshalIndent(map[string]any{
-		"service": ServiceName, "appVersion": c.AppVersion, "retentionDays": c.RetentionDays,
+		"service": serviceName, "appVersion": c.AppVersion, "retentionDays": c.RetentionDays,
 		"vaultDecryptionKey": "not held by server; restore verifies ciphertext checksums only",
 	}, "", "  ")
 	files := []capsule.File{
@@ -98,8 +102,8 @@ func (c Collector) Collect() ([]capsule.File, map[string]any, map[string]any, er
 	return files, deps, recipe, nil
 }
 
-func payload(files []capsule.File, deps, recipe map[string]any, version string) recoveryclient.Payload {
-	p := recoveryclient.Payload{ServiceName: ServiceName, AppVersion: version, Dependencies: deps, VerificationRecipe: recipe}
+func payload(files []capsule.File, deps, recipe map[string]any, version, serviceName string) recoveryclient.Payload {
+	p := recoveryclient.Payload{ServiceName: serviceName, AppVersion: version, Dependencies: deps, VerificationRecipe: recipe}
 	for _, f := range files {
 		p.Files = append(p.Files, recoveryclient.File{Path: f.Path, Data: f.Content, Mode: int64(f.Mode)})
 	}
@@ -107,10 +111,17 @@ func payload(files []capsule.File, deps, recipe map[string]any, version string) 
 }
 func (c Collector) Payload() (recoveryclient.Payload, error) {
 	f, d, r, e := c.Collect()
-	return payload(f, d, r, c.AppVersion), e
+	if e != nil {
+		return recoveryclient.Payload{}, e
+	}
+	serviceName, e := c.State.ServiceName()
+	return payload(f, d, r, c.AppVersion, serviceName), e
 }
 func Seal(files []capsule.File, deps, recipe map[string]any, version string, key RecoveryKey) ([]byte, capsule.Manifest, error) {
-	return recoveryclient.Seal(payload(files, deps, recipe, version), key)
+	return SealWithService(files, deps, recipe, version, key, ServiceName)
+}
+func SealWithService(files []capsule.File, deps, recipe map[string]any, version string, key RecoveryKey, serviceName string) ([]byte, capsule.Manifest, error) {
+	return recoveryclient.Seal(payload(files, deps, recipe, version, serviceName), key)
 }
 func FilenameSafe(s string) string { return recoveryclient.FilenameSafe(s) }
 
@@ -145,6 +156,13 @@ func (s *Service) Run(ctx context.Context) (recoveryclient.Result, error) {
 		return recoveryclient.Result{}, ErrDepositInProgress
 	}
 	defer s.State.operationMu.Unlock()
+	serviceName, err := s.State.ServiceName()
+	if err != nil {
+		return recoveryclient.Result{}, s.saveRun(recoveryclient.Result{}, err)
+	}
+	if err := migrateLocalCopies(s.Config.Directory, serviceName); err != nil {
+		return recoveryclient.Result{}, s.saveRun(recoveryclient.Result{}, err)
+	}
 	// Stamp even degraded attempts so the scheduler does not retry every tick.
 	if _, err := s.State.RecoveryKey(); err != nil && !errors.Is(err, ErrNotPaired) {
 		if e := s.State.Set("backup_last_attempt", time.Now().UTC().Format(time.RFC3339)); e != nil {
@@ -152,7 +170,7 @@ func (s *Service) Run(ctx context.Context) (recoveryclient.Result, error) {
 		}
 		return recoveryclient.Result{}, s.saveRun(recoveryclient.Result{}, err)
 	}
-	result, err := recoveryclient.Run(ctx, recoveryclient.RunConfig{DataDir: s.State.dir, AppName: ServiceName,
+	result, err := recoveryclient.Run(ctx, recoveryclient.RunConfig{DataDir: s.State.dir, AppName: serviceName,
 		AppVersion: s.Collector.AppVersion, BackupDir: s.Config.Directory, Keep: s.Config.Keep, Sealer: tokenSealer{s.State}}, s.State, s.Collector.Payload, s.Client)
 	return result, s.saveRun(result, err)
 }

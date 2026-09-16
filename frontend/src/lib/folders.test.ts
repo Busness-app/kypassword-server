@@ -21,7 +21,7 @@ test("nested folders and renames preserve identity, contents and history through
   const reopened = await KeePassVault.open(exported, key);
   const renamed = reopened.getLiveGroups().find(group => group.uuid === child.uuid);
   assert.equal(renamed?.parentUuid, parent.uuid);
-  assert.equal(renamed?.path, "KyPasswords Vault / Renamed / Child");
+  assert.equal(renamed?.path, "KyVault Vault / Renamed / Child");
   assert.equal(renamed?.depth, 2);
   assert.equal(reopened.getLiveGroups().find(group => group.uuid === other.uuid)?.name, "秘密 <folder>");
   assert.equal(reopened.getLiveEntries()[0].groupUuid, child.uuid);

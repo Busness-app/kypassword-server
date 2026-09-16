@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Busness-app/kypassword-server/internal/sso"
-	"github.com/Busness-app/kypassword-server/internal/users"
+	"github.com/Busness-app/kyvault-server/internal/sso"
+	"github.com/Busness-app/kyvault-server/internal/users"
 )
 
 func TestRetiredAuthEndpointsAreGone(t *testing.T) {
@@ -112,7 +112,7 @@ func TestAdminSSOPutRefusesEnvironmentSourcedSettings(t *testing.T) {
 	_, cookie := signedInUser(t, srv, "admin", users.RoleAdmin)
 
 	t.Setenv(sso.EnvIssuer, "https://signon.example")
-	t.Setenv(sso.EnvClientID, "kypassword")
+	t.Setenv(sso.EnvClientID, "kyvault")
 	t.Setenv(sso.EnvClientSecret, "s3cret")
 
 	body := strings.NewReader(`{"enabled":true,"issuerUrl":"https://attacker.example","clientId":"evil","clientSecret":"x"}`)
@@ -141,7 +141,7 @@ func TestAdminSSOPutStillWorksWithoutTheEnvironment(t *testing.T) {
 		t.Setenv(k, "")
 	}
 
-	body := strings.NewReader(`{"enabled":true,"issuerUrl":"https://signon.example","clientId":"kypassword","clientSecret":"s3cret","autoProvision":true}`)
+	body := strings.NewReader(`{"enabled":true,"issuerUrl":"https://signon.example","clientId":"kyvault","clientSecret":"s3cret","autoProvision":true}`)
 	req := httptest.NewRequest(http.MethodPut, "/api/admin/sso", body)
 	req.Header.Set("Content-Type", "application/json")
 	req.AddCookie(cookie)

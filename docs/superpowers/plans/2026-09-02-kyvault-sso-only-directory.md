@@ -1,10 +1,10 @@
-# KyPassword SSO-Only Directory Implementation Plan
+# KyVault SSO-Only Directory Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make KySignOn the sole directory and sole authenticator for KyPassword, so the master password never reaches the server in any form and there is exactly one account record per person across the suite.
+**Goal:** Make KySignOn the sole directory and sole authenticator for KyVault, so the master password never reaches the server in any form and there is exactly one account record per person across the suite.
 
-**Architecture:** KyPassword keeps its vault, device and audit subsystems untouched — the vault store is already keyed by user ID alone and has no dependency on the auth verifier. What goes is the local password directory: the `PasswordHash`/`AuthSalt` verifier, the login and setup endpoints, paper-recovery-as-site-access, and admin user creation. Accounts arrive by KySignOn replication or first SSO login, keyed on the OIDC `sub`. The master password becomes purely client-side key material that unwraps the vault envelope after an SSO session already exists.
+**Architecture:** KyVault keeps its vault, device and audit subsystems untouched — the vault store is already keyed by user ID alone and has no dependency on the auth verifier. What goes is the local password directory: the `PasswordHash`/`AuthSalt` verifier, the login and setup endpoints, paper-recovery-as-site-access, and admin user creation. Accounts arrive by KySignOn replication or first SSO login, keyed on the OIDC `sub`. The master password becomes purely client-side key material that unwraps the vault envelope after an SSO session already exists.
 
 **Tech Stack:** Go 1.26 stdlib plus `golang.org/x/crypto` (the only direct dependency), JSON file store, React + TypeScript + Vite frontend.
 
@@ -16,7 +16,7 @@
 - **No new npm dependencies.**
 - Backend gates: `gofmt -l .` must print nothing, `go vet ./...`, `go test -race ./...`, `govulncheck ./...`.
 - Frontend gates: `npm test && npm run build` in `frontend/` (`build` is `tsc && vite build`, so it is the typecheck gate).
-- Docker build must still succeed: `docker build -t kypassword-server:latest .`
+- Docker build must still succeed: `docker build -t kyvault-server:latest .`
 - **The server must never receive an unhashed master password, a plaintext vault key, or decrypted KeePass data** (`PROMPT.md:9`). This plan strengthens that guarantee; no step may weaken it.
 - All KeePass decryption, editing, encryption and key handling stay in the client (`PROMPT.md`, "Vault and file behavior").
 - Audit records stay tamper-evident; every new state-changing path writes one.
@@ -26,9 +26,9 @@
 
 ## Two findings that shaped this plan
 
-Both were verified against the code, not inferred. Read them before starting — they change what "make KyPassword OIDC-only" means.
+Both were verified against the code, not inferred. Read them before starting — they change what "make KyVault OIDC-only" means.
 
-### Finding A: the KySignOn → KyPassword replication does not work today
+### Finding A: the KySignOn → KyVault replication does not work today
 
 Both products' docs advertise account replication. It is wired at both ends and it silently does nothing.
 
@@ -39,7 +39,7 @@ Both products' docs advertise account replication. It is wired at both ends and 
 - Auth: `Authorization: Bearer <secret>` **and** `X-KySignOn-Signature`, an HMAC-SHA256 over `timestamp + "." + body`, with the timestamp in `X-KySignOn-Timestamp`.
 - Replay key: `X-KySignOn-Event-Id` and `Idempotency-Key`.
 
-**What KyPassword expects** (`internal/api/admin_handlers.go:140-151`, `handleSyncWebhook`):
+**What KyVault expects** (`internal/api/admin_handlers.go:140-151`, `handleSyncWebhook`):
 - Body `{"event": "...", "user": {"id","username","role","active","email"}}`.
 - Signature header `X-Sync-Signature`, HMAC over the **body only**, no timestamp.
 
@@ -47,11 +47,11 @@ So `ev.Event` is always `""`, `ev.User` is the zero value, the `switch` matches 
 
 `SyncWebhookPayload` at `kysignon-server/internal/sync/sync.go:298` is dead code: `grep -rn 'SyncWebhookPayload{'` finds no construction anywhere.
 
-**Ruling: fix the receiver, not the sender.** KySignOn's format is SCIM-shaped by design, is already deployed, and carries replay protection (signed timestamp + idempotency key) that KyPassword's format lacks. Task 1 makes KyPassword speak what KySignOn actually sends.
+**Ruling: fix the receiver, not the sender.** KySignOn's format is SCIM-shaped by design, is already deployed, and carries replay protection (signed timestamp + idempotency key) that KyVault's format lacks. Task 1 makes KyVault speak what KySignOn actually sends.
 
 ### Finding B: two live account-takeover paths in the code being deleted
 
-1. **The SSO callback silently links by username.** `internal/api/auth_handlers.go:280-283`: when `GetBySSOSub` misses, it falls back to `GetByUsername(claims.PreferredUsername)` and links that account to the incoming `sub`. Any KySignOn identity whose `preferred_username` matches a local KyPassword account takes over that account and its vault. Task 2 deletes it. This is the same collision hazard rejected for the migration path, and it is live today.
+1. **The SSO callback silently links by username.** `internal/api/auth_handlers.go:280-283`: when `GetBySSOSub` misses, it falls back to `GetByUsername(claims.PreferredUsername)` and links that account to the incoming `sub`. Any KySignOn identity whose `preferred_username` matches a local KyVault account takes over that account and its vault. Task 2 deletes it. This is the same collision hazard rejected for the migration path, and it is live today.
 
 2. **The login endpoint accepts the raw master password.** `internal/api/auth_handlers.go:38-42` tries the client-derived `authSecret`, then falls back to `req.Password` against the same `VerifyAuth`. Because the fallback fires on *failure* of the derived path, a client bug or version skew downgrades silently to transmitting the real master password — directly contrary to `PROMPT.md:9`. Task 5 deletes the endpoint, which removes the path by construction rather than patching it.
 
@@ -264,7 +264,7 @@ import (
 // request cannot be replayed indefinitely; the sender re-signs on every retry.
 const clockSkew = 5 * time.Minute
 
-// SCIMUser is the subset of a SCIM User resource KyPassword acts on.
+// SCIMUser is the subset of a SCIM User resource KyVault acts on.
 type SCIMUser struct {
 	// ID is the KySignOn user ID, which is also the OIDC `sub`. It is the only key an
 	// account is ever matched on.
@@ -498,12 +498,12 @@ In `cmd/server/main.go`, before the server starts listening:
 
 ```go
 	if unlinked := users.UnlinkedActive(userStore); len(unlinked) > 0 {
-		log.Printf("KyPassword now authenticates only through KySignOn, and %d active account(s) have no KySignOn identity:", len(unlinked))
+		log.Printf("KyVault now authenticates only through KySignOn, and %d active account(s) have no KySignOn identity:", len(unlinked))
 		for _, u := range unlinked {
 			log.Printf("  - %s (id %s)", u.Username, u.ID)
 		}
-		log.Printf("Link each one:      kypassword-server link-sso --username <name> --sub <kysignon-user-id>")
-		log.Printf("Or retire it:       kypassword-server deactivate --username <name>")
+		log.Printf("Link each one:      kyvault-server link-sso --username <name> --sub <kysignon-user-id>")
+		log.Printf("Or retire it:       kyvault-server deactivate --username <name>")
 		log.Printf("The KySignOn user ID is the value shown in its admin user list, and is the same value it puts in the OIDC 'sub' claim.")
 		os.Exit(1)
 	}
@@ -656,7 +656,7 @@ git commit -m "feat(auth): remove every authentication path except KySignOn"
 
 ```go
 func TestSettingsFromEnvOverrideDisk(t *testing.T) {
-	// With KYPASSWORD_OIDC_ISSUER, _CLIENT_ID and _CLIENT_SECRET set, Load() must return
+	// With KYVAULT_OIDC_ISSUER, _CLIENT_ID and _CLIENT_SECRET set, Load() must return
 	// them regardless of what is on disk. Without them, Load() must return the disk
 	// settings unchanged. There is no local admin who could configure SSO through the UI,
 	// so the environment has to be able to bootstrap it.
@@ -665,7 +665,7 @@ func TestSettingsFromEnvOverrideDisk(t *testing.T) {
 
 - [ ] **Step 2: Implement**
 
-Read `KYPASSWORD_OIDC_ISSUER`, `KYPASSWORD_OIDC_CLIENT_ID`, `KYPASSWORD_OIDC_CLIENT_SECRET`, and optionally `KYPASSWORD_OIDC_REDIRECT_URI` and `KYPASSWORD_OIDC_AUTO_PROVISION`. When issuer, client ID and client secret are all set, `Load()` returns environment-sourced settings with `Enabled: true`.
+Read `KYVAULT_OIDC_ISSUER`, `KYVAULT_OIDC_CLIENT_ID`, `KYVAULT_OIDC_CLIENT_SECRET`, and optionally `KYVAULT_OIDC_REDIRECT_URI` and `KYVAULT_OIDC_AUTO_PROVISION`. When issuer, client ID and client secret are all set, `Load()` returns environment-sourced settings with `Enabled: true`.
 
 At startup, if SSO resolves to disabled or has no issuer, log a clear fatal error — under this plan a server with no IdP can authenticate nobody, so starting would only serve 503s.
 
@@ -752,7 +752,7 @@ gofmt -l .
 go build ./... && go vet ./... && go test -race ./...
 govulncheck ./...
 cd frontend && npm test && npm run build
-docker build -t kypassword-server:latest .
+docker build -t kyvault-server:latest .
 ```
 
 ```bash
@@ -773,6 +773,6 @@ git commit -m "docs: KySignOn is the only directory"
 
 ## What this does not do
 
-This makes KySignOn the directory. It does not merge the products, and the reasons remain: KyPassword is zero-knowledge by contract while KySignOn is a knowing server, they have opposite failure modes, and the master password must stay client-derived because it is the vault's key-wrapping secret. After this plan those two properties are cleaner, not weaker — KyPassword ends up holding *less* about its users than before, not more.
+This makes KySignOn the directory. It does not merge the products, and the reasons remain: KyVault is zero-knowledge by contract while KySignOn is a knowing server, they have opposite failure modes, and the master password must stay client-derived because it is the vault's key-wrapping secret. After this plan those two properties are cleaner, not weaker — KyVault ends up holding *less* about its users than before, not more.
 
 The remaining consolidation opportunity is the duplicated pairing and audit code (`zero_code_pairing_handoff_spec.md` is byte-identical across both repos, md5 `24899bae8d11ac740c58dcc5c3581e32`). That belongs in `ky_server_base` and is a separate plan, to be done after this one settles.

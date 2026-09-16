@@ -1,6 +1,6 @@
-# Contributing to KyPassword
+# Contributing to KyVault
 
-Thanks for wanting to work on this. KyPassword is a self-hosted password manager, which
+Thanks for wanting to work on this. KyVault is a self-hosted password manager, which
 means every contribution lands on a machine holding somebody's passwords. This document describes what a
 contribution has to clear before it merges, and why each gate exists.
 
@@ -24,9 +24,9 @@ every space here.
 
 ## The User Contract
 
-Everything below follows from one promise KyPassword makes to the person running it:
+Everything below follows from one promise KyVault makes to the person running it:
 
-> **KyPassword will be as secure as we can make it by default, and every place
+> **KyVault will be as secure as we can make it by default, and every place
 > where security was traded for convenience will be written down, in plain
 > language, where the user reads it before they rely on it.**
 
@@ -39,7 +39,7 @@ a contribution that breaks either half does not merge — see
 Three standing invariants fall out of it, and they are not up for
 re-litigation in a PR:
 
-- **KyPassword never archives, deletes, or moves a user's passwords on its own.**
+- **KyVault never archives, deletes, or moves a user's passwords on its own.**
   Destructive password actions happen because a human asked for that specific
   action. No feature, default, heuristic, or classifier outcome may archive
   passwords. This is absolute.
@@ -61,10 +61,10 @@ docker compose up -d
 ```
 
 Source install (never paste this into a published-image install: the build overlay wins over a
-`KYPASSWORD_IMAGE` digest pin, and a source install must set this line before its first `up -d` on a
+`KYVAULT_IMAGE` digest pin, and a source install must set this line before its first `up -d` on a
 new checkout; an install from before the published image existed has no such line yet, so run
 this block once and confirm with `docker compose config --images`, which must print
-`kypassword-server:local` rather than the `ghcr.io` name):
+`kyvault-server:local` rather than the `ghcr.io` name):
 
 ```bash
 [ -e .env ] || (umask 077; cp .env.example .env); chmod 600 .env   # an existing .env is kept

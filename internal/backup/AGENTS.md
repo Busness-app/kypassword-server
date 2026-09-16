@@ -2,7 +2,7 @@
 
 ## Purpose and ownership
 
-KyPassword owns file-store snapshots, the settings/sealer adapter, product validation,
+KyVault owns file-store snapshots, the settings/sealer adapter, product validation,
 audit/HTTP/CLI integration and UI. `ky-primitives/recoveryclient` v0.6.0 owns pairing,
 write-once pins, sealing, delivery, retention, schedule calculation, drill and restore.
 
@@ -10,12 +10,19 @@ write-once pins, sealing, delivery, retention, schedule calculation, drill and r
 
 - Preserve `CONFIG_DIR/kyrecovery.json` fields and `recovery-token.key`. Tokens use the
   existing direct AES-GCM key, nonce prefix, RawStdEncoding and additional data
-  `kypassword:kyrecovery_token`. The synthetic legacy fixture pins this contract.
+  `kyvault:kyrecovery_token`. Reads also accept the pre-rename
+  `kypassword:kyrecovery_token` AAD so existing deployments survive the product rename;
+  new writes always use the KyVault binding. The synthetic legacy fixture pins this contract.
+- Persist the recovery service binding in `serviceName` when pairing. State written before the
+  rename has no field and must continue using `kypassword` for KyRecovery manifests, run
+  validation, and local-copy listing/pruning; new pairings use `kyvault`. When a new pairing
+  follows an explicit unpair, legacy local-copy filenames are migrated using
+  `recoveryclient.LocalPrefix` without overwriting an existing destination.
 - Settings writes are atomic under the state mutex; pairing/pin/unpair hold it across
   library writes. The operation mutex prevents those changes during a backup run; lifecycle operations
   and competing runs return ErrDepositInProgress immediately instead of waiting.
   ClaimPairing reserves this lock before consuming a remote one-use pairing code.
-- `kypassword` is the capsule/service binding and RunConfig.AppName; `KyPassword` is the
+- `kyvault` is the capsule/service binding and RunConfig.AppName; `KyVault` is the
   display label. RunConfig.DataDir is CONFIG_DIR; drill scratch is under DATA_DIR.
 - Collect only through existing store snapshots. Include effective operational secrets
   inside the sealed capsule. The optional effective SCIM provisioning token is included as
@@ -26,13 +33,13 @@ write-once pins, sealing, delivery, retention, schedule calculation, drill and r
 - Normal operation holds only the recovery public key. The library drill uses a throwaway
   private key; `cmd/server/backup.go:runRestore` alone may invoke library Restore, with
   shares on stdin. Product validation must pass before the CLI prints restore success.
-- HTTPS and refused redirects are library policy. KYPASSWORD_BACKUP_ALLOW_PRIVATE_RECOVERY
+- HTTPS and refused redirects are library policy. KYVAULT_BACKUP_ALLOW_PRIVATE_RECOVERY
   explicitly admits private/CGNAT hosts, while loopback/link-local/reserved targets remain
   refused. All address policy, including resolved addresses, belongs to recoveryclient;
   v0.5.1 does not classify documentation networks as blocked.
-- Local copies use KYPASSWORD_BACKUP_DIR and BACKUP_KEEP (same prefix, default 7, >=1).
+- Local copies use KYVAULT_BACKUP_DIR and BACKUP_KEEP (same prefix, default 7, >=1).
   The directory must not overlap CONFIG_DIR or DATA_DIR/{vaults,audit,drill},
-  including existing symlink ancestors. Interval defaults from KYPASSWORD_BACKUP_DEPOSIT_INTERVAL, overridden by admin settings:
+  including existing symlink ancestors. Interval defaults from KYVAULT_BACKUP_DEPOSIT_INTERVAL, overridden by admin settings:
   off or 900–31622400 whole seconds. Runs count from last attempt, including failures.
 - Unpair removes URL/token only. Pins, topology, receipts and local copies stay. Remote
   revocation is a separate KyRecovery-admin action. Status never exposes a token.

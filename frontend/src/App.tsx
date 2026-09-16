@@ -2,7 +2,7 @@ import React, { useState, useEffect, useSyncExternalStore, useRef, useCallback }
 import { getJSON, postJSON, putJSON, toErrorMessage } from "./lib/api";
 import { VaultSaveQueue, uploadVault, canDiscardVault, type SaveState } from "./lib/vaultSave";
 import { IdleDeadline, cachedKeyExpired, loadAutoLockMinutes, storeAutoLockMinutes, type AutoLockMinutes } from "./lib/autoLock";
-import { sealDraft, openDraft, draftStore, readDraft, removeDraft, type EntryDraft, type LockedDraft } from "./lib/lockedDraft";
+import { sealDraft, openDraft, draftPointer, draftStore, readDraft, removeDraft, type EntryDraft, type LockedDraft } from "./lib/lockedDraft";
 import { KeePassVault } from "./lib/kdbx";
 import {
   generateVaultMasterKey,
@@ -62,7 +62,7 @@ export function App() {
   const memoryDraft = useRef<LockedDraft | undefined>(undefined);
   const [lockNotice, setLockNotice] = useState("");
   const recoveryId = (u: User): string | undefined => {
-    try { return sessionStorage.getItem(`kypassword.draft:${u.id}`) ?? undefined; } catch { return undefined; }
+    try { return draftPointer(sessionStorage, u.id); } catch { return undefined; }
   };
   const [recoveryPending, setRecoveryPending] = useState(false);
   const unsaved = recoveryPending || hasDraft || saveState.kind !== "saved";
@@ -145,7 +145,7 @@ export function App() {
         if (!current()) return;
         await storeDeviceVaultKey(u.username, bytesToHex(key)).catch(() => { notices.push("Could not cache the device key; you may need your master password again."); });
         if (!current()) { await clearDeviceVaultKey(u.username).catch(() => {}); return; }
-        try { sessionStorage.removeItem(`kypassword.locked:${u.id}`); localStorage.removeItem(`kypassword.locked:${u.id}`); } catch {}
+        try { sessionStorage.removeItem(`kyvault.locked:${u.id}`); localStorage.removeItem(`kyvault.locked:${u.id}`); } catch {}
         setSaveQueue(new VaultSaveQueue(newVault, version));
         setVaultKey(key);
         setVault(newVault);
@@ -167,8 +167,8 @@ export function App() {
       } else {
         // The trusted-key deadline survives refreshing or closing every tab.
         try {
-          const last = sessionStorage.getItem(`kypassword.activity:${u.id}`) ?? localStorage.getItem(`kypassword.activity:${u.id}`);
-          if (sessionStorage.getItem(`kypassword.locked:${u.id}`) || localStorage.getItem(`kypassword.locked:${u.id}`) ||
+          const last = sessionStorage.getItem(`kyvault.activity:${u.id}`) ?? localStorage.getItem(`kyvault.activity:${u.id}`);
+          if (sessionStorage.getItem(`kyvault.locked:${u.id}`) || localStorage.getItem(`kyvault.locked:${u.id}`) ||
               cachedKeyExpired(last, autoLockMinutes * 60000)) {
             setShowUnlockModal(true);
             await clearDeviceVaultKey(u.username).catch(() => {});
@@ -202,8 +202,8 @@ export function App() {
       if (!current()) return;
       if (!masterPassword) {
         try {
-          const last = sessionStorage.getItem(`kypassword.activity:${u.id}`) ?? localStorage.getItem(`kypassword.activity:${u.id}`);
-          if (localStorage.getItem(`kypassword.locked:${u.id}`) || cachedKeyExpired(last, autoLockMinutes * 60000)) {
+          const last = sessionStorage.getItem(`kyvault.activity:${u.id}`) ?? localStorage.getItem(`kyvault.activity:${u.id}`);
+          if (localStorage.getItem(`kyvault.locked:${u.id}`) || cachedKeyExpired(last, autoLockMinutes * 60000)) {
             setShowUnlockModal(true);
             await clearDeviceVaultKey(u.username).catch(() => {});
             return;
@@ -219,7 +219,12 @@ export function App() {
         setRecoveryPending(true);
         if (!await removeDraft(id)) notices.push("Recovered local edits, but could not remove the old encrypted recovery copy from browser storage.");
       }
-      if (local.kind === "available") { try { sessionStorage.removeItem(`kypassword.draft:${u.id}`); } catch {} }
+      if (local.kind === "available") {
+        try {
+          sessionStorage.removeItem(`kyvault.draft:${u.id}`);
+          sessionStorage.removeItem(`kypassword.draft:${u.id}`);
+        } catch {}
+      }
       if (!current()) return;
       memoryDraft.current = undefined;
       setRecoveryPending(local.kind === "unavailable");
@@ -231,7 +236,7 @@ export function App() {
       setVault(loadedVault);
       if (recovered) notices.unshift("Recovered local edits. Review them before saving.");
       setLockNotice(notices.join(" "));
-      if (masterPassword) { try { sessionStorage.removeItem(`kypassword.locked:${u.id}`); localStorage.removeItem(`kypassword.locked:${u.id}`); } catch {} }
+      if (masterPassword) { try { sessionStorage.removeItem(`kyvault.locked:${u.id}`); localStorage.removeItem(`kyvault.locked:${u.id}`); } catch {} }
       setShowUnlockModal(false);
     } catch (err) {
       if (!current()) return;
@@ -272,8 +277,8 @@ export function App() {
   const closeVault = () => {
     unlockGeneration.current++;
     if (user) {
-      try { sessionStorage.setItem(`kypassword.locked:${user.id}`, "1"); } catch {}
-      try { localStorage.setItem(`kypassword.locked:${user.id}`, "1"); } catch {}
+      try { sessionStorage.setItem(`kyvault.locked:${user.id}`, "1"); } catch {}
+      try { localStorage.setItem(`kyvault.locked:${user.id}`, "1"); } catch {}
     }
     saveQueue?.discard();
     draft.current = null;
@@ -299,7 +304,7 @@ export function App() {
     const id = `${u.id}:${crypto.randomUUID()}`;
     let durableReference = true;
     if (binary) {
-      try { sessionStorage.setItem(`kypassword.draft:${u.id}`, id); }
+      try { sessionStorage.setItem(`kyvault.draft:${u.id}`, id); }
       catch { durableReference = false; }
     }
     // Capture the serializer before discarding; no subsequent network save can run.
@@ -333,8 +338,8 @@ export function App() {
     const deadline = new IdleDeadline(autoLockMinutes * 60000);
     const record = () => {
       const now = String(Date.now());
-      try { sessionStorage.setItem(`kypassword.activity:${user.id}`, now); } catch {}
-      try { localStorage.setItem(`kypassword.activity:${user.id}`, now); } catch {}
+      try { sessionStorage.setItem(`kyvault.activity:${user.id}`, now); } catch {}
+      try { localStorage.setItem(`kyvault.activity:${user.id}`, now); } catch {}
     };
     record();
     const check = () => { if (deadline.expired()) autoLock.current(); };
@@ -383,7 +388,12 @@ export function App() {
         memoryDraft.current = undefined;
         const id = user ? recoveryId(user) : undefined;
         if (id) await draftStore(id, "delete");
-        if (user) { try { sessionStorage.removeItem(`kypassword.draft:${user.id}`); } catch {} }
+        if (user) {
+          try {
+            sessionStorage.removeItem(`kyvault.draft:${user.id}`);
+            sessionStorage.removeItem(`kypassword.draft:${user.id}`);
+          } catch {}
+        }
       }),
       logout(),
     ]);
@@ -401,7 +411,7 @@ export function App() {
   if (loading) {
     return (
       <div className="auth-container">
-        <p style={{ color: "var(--accent)" }}>Loading KyPasswords…</p>
+        <p style={{ color: "var(--accent)" }}>Loading KyVault…</p>
       </div>
     );
   }
@@ -415,8 +425,8 @@ export function App() {
       {/* Navbar */}
       <header className="app-nav">
         <a href="/" className="nav-brand">
-          <img src="/logo.png" alt="KyPasswords" />
-          <span>KyPasswords</span>
+          <img src="/logo.png" alt="KyVault" />
+          <span>KyVault</span>
         </a>
 
         <div className="nav-links">

@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Busness-app/kypassword-server/internal/sso"
-	"github.com/Busness-app/kypassword-server/internal/users"
+	"github.com/Busness-app/kyvault-server/internal/sso"
+	"github.com/Busness-app/kyvault-server/internal/users"
 )
 
 // mockIssuer stands in for KySignOn: discovery, JWKS, the token endpoint, and a
@@ -65,7 +65,7 @@ func newMockIssuer(t *testing.T, claims map[string]any) *mockIssuer {
 			json.NewEncoder(w).Encode(map[string]any{"keys": []any{map[string]any{"kty": "RSA", "alg": "RS256", "kid": publishedKid, "n": base64.RawURLEncoding.EncodeToString(signingKey.N.Bytes()), "e": base64.RawURLEncoding.EncodeToString(big.NewInt(int64(signingKey.E)).Bytes())}}})
 		case "/oauth/token":
 			r.ParseForm()
-			values := map[string]any{"iss": issuer, "aud": "kypassword-app", "exp": time.Now().Add(time.Hour).Unix(), "iat": time.Now().Unix(), "nonce": r.Form.Get("code")}
+			values := map[string]any{"iss": issuer, "aud": "kyvault-app", "exp": time.Now().Add(time.Hour).Unix(), "iat": time.Now().Unix(), "nonce": r.Form.Get("code")}
 			for k, v := range claims {
 				values[k] = v
 			}
@@ -119,7 +119,7 @@ func (is *mockIssuer) set(k string, v any) {
 // remove claims; "__typ" and "__key" override the header type and signing key.
 func (is *mockIssuer) logoutToken(overrides map[string]any) string {
 	now := time.Now()
-	values := map[string]any{"iss": is.URL, "aud": "kypassword-app", "iat": now.Unix(), "exp": now.Add(2 * time.Minute).Unix(), "jti": randomHex(8),
+	values := map[string]any{"iss": is.URL, "aud": "kyvault-app", "iat": now.Unix(), "exp": now.Add(2 * time.Minute).Unix(), "jti": randomHex(8),
 		"events": map[string]any{backchannelLogoutEvent: map[string]any{}}}
 	header := map[string]any{"alg": "RS256", "kid": "test-key", "typ": "logout+jwt"}
 	key := is.key
@@ -209,7 +209,7 @@ func TestSSOCallbackDoesNotLinkByUsername(t *testing.T) {
 			"email":              "attacker@evil.example",
 		})
 		srv.oidcHTTP = idp.Client()
-		if err := srv.ssoStore.Save(sso.SSOSettings{Enabled: true, IssuerURL: idp.URL, ClientID: "kypassword-app"}); err != nil {
+		if err := srv.ssoStore.Save(sso.SSOSettings{Enabled: true, IssuerURL: idp.URL, ClientID: "kyvault-app"}); err != nil {
 			t.Fatalf("Save: %v", err)
 		}
 
@@ -245,7 +245,7 @@ func TestSSOCallbackDoesNotLinkByUsername(t *testing.T) {
 			"email":              "attacker@evil.example",
 		})
 		srv.oidcHTTP = idp.Client()
-		if err := srv.ssoStore.Save(sso.SSOSettings{Enabled: true, IssuerURL: idp.URL, ClientID: "kypassword-app"}); err != nil {
+		if err := srv.ssoStore.Save(sso.SSOSettings{Enabled: true, IssuerURL: idp.URL, ClientID: "kyvault-app"}); err != nil {
 			t.Fatalf("Save: %v", err)
 		}
 
@@ -284,7 +284,7 @@ func TestSSOCallbackStillMatchesOnSub(t *testing.T) {
 		"email":              "alice@example.com",
 	})
 	srv.oidcHTTP = idp.Client()
-	if err := srv.ssoStore.Save(sso.SSOSettings{Enabled: true, IssuerURL: idp.URL, ClientID: "kypassword-app"}); err != nil {
+	if err := srv.ssoStore.Save(sso.SSOSettings{Enabled: true, IssuerURL: idp.URL, ClientID: "kyvault-app"}); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 

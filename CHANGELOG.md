@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### KyVault rename preserves existing state
+
+The product is now KyVault. Existing Docker project/volume names, container paths, browser
+key stores, locked-draft storage, instance locks, and recovery-token AAD remain stable so an
+upgrade does not strand data or cached key material. Existing `KYPASSWORD_*` variables are
+rejected at startup with the corresponding `KYVAULT_*` replacement; rename them before
+restarting. Existing `KYPASSWORD_IMAGE` digest pins remain readable, but re-run the pinning
+recipe to write the canonical `KYVAULT_IMAGE` name.
+
 ### KySignOn back-channel logout
 
 Sessions now record the KySignOn identity that produced them, and
@@ -20,7 +29,7 @@ install keeps building only if `docker-compose.build.yml` is in its `COMPOSE_FIL
 from before this change have no `COMPOSE_FILE` line, so `git pull && docker compose up -d` would
 silently switch them to the published image. Before the first `up -d` on this revision, run the
 snippet in `docker-compose.build.yml` once and confirm with `docker compose config --images`
-(`kypassword-server:local` is source; the `ghcr.io` name is published).
+(`kyvault-server:local` is source; the `ghcr.io` name is published).
 
 The audit chain moved onto the shared `ky-primitives/auditchain` and `ky-primitives/keyfile`
 packages. Read this before upgrading: the audit store now refuses to start in cases the

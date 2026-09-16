@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { IdleDeadline, parseAutoLockMinutes } from "./autoLock";
+import { IdleDeadline, loadAutoLockMinutes, parseAutoLockMinutes, storeAutoLockMinutes } from "./autoLock";
 
 test("activity extends an unexpired deadline but cannot reopen an expired session", () => {
   const idle = new IdleDeadline(60_000, 100_000, 0);
@@ -23,6 +23,28 @@ test("invalid browser preferences fall back to five minutes", () => {
   for (const value of [1, 5, 15, 30, 60]) {
     assert.equal(parseAutoLockMinutes(value), value);
     assert.equal(parseAutoLockMinutes(String(value)), value);
+  }
+});
+
+test("legacy auto-lock preference survives the settings-key rename", () => {
+  const original = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  const values = new Map([["kypassword.autoLockMinutes", "1"]]);
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      removeItem: (key: string) => values.delete(key),
+    },
+  });
+  try {
+    assert.equal(loadAutoLockMinutes(), 1);
+    storeAutoLockMinutes(15);
+    assert.equal(values.get("kyvault.autoLockMinutes"), "15");
+    assert.equal(values.has("kypassword.autoLockMinutes"), false);
+  } finally {
+    if (original) Object.defineProperty(globalThis, "localStorage", original);
+    else delete (globalThis as { localStorage?: unknown }).localStorage;
   }
 });
 

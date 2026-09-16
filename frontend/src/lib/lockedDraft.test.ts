@@ -1,6 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { openDraft, sealDraft } from "./lockedDraft";
+import { draftPointer, openDraft, sealDraft } from "./lockedDraft";
+
+test("draft pointer reads the renamed key and falls back to the legacy key", () => {
+  const values = new Map([["kypassword.draft:u1", "legacy-checkpoint"]]);
+  const storage = { getItem: (key: string) => values.get(key) ?? null };
+  assert.equal(draftPointer(storage, "u1"), "legacy-checkpoint");
+  values.set("kyvault.draft:u1", "current-checkpoint");
+  assert.equal(draftPointer(storage, "u1"), "current-checkpoint");
+});
 
 test("recovery copy authenticates account, version, draft and binary with the vault key", async (t) => {
   let metadataBytes: Uint8Array | undefined;

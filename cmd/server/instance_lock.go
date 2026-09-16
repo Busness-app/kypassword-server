@@ -19,7 +19,7 @@ func acquireInstanceLock(configDir string) (*instanceLock, error) {
 	}
 	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		file.Close()
-		return nil, fmt.Errorf("another KyPassword process is using %s", configDir)
+		return nil, fmt.Errorf("another KyVault process is using %s", configDir)
 	}
 	return &instanceLock{file: file}, nil
 }

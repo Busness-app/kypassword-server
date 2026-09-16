@@ -30,7 +30,7 @@ export type WrappedEnvelope = {
 };
 
 // An envelope written before the Argon2id change, and what KyAuth's
-// KyPasswordEnvelopeCrypto still produces today. No `kdf` field means PBKDF2-HMAC-SHA256.
+// KyVaultEnvelopeCrypto still produces today. No `kdf` field means PBKDF2-HMAC-SHA256.
 type LegacyPbkdf2Envelope = {
   kdf?: undefined;
   salt: string;
@@ -123,7 +123,7 @@ export async function wrapVaultKey(vaultKey: Uint8Array, secret: string): Promis
 // Unwrap vault master key from an encrypted envelope.
 //
 // Reads both shapes. The Argon2id envelope is what we write; the PBKDF2 one is what older
-// envelopes and KyAuth's current KyPasswordEnvelopeCrypto contain. Dropping the PBKDF2
+// envelopes and KyAuth's current KyVaultEnvelopeCrypto contain. Dropping the PBKDF2
 // path would mean a vault uploaded by an un-updated KyAuth could not be opened here at
 // all, so it stays until KyAuth writes Argon2id too.
 export async function unwrapVaultKey(envelopeJSON: string, secret: string): Promise<Uint8Array> {

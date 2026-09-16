@@ -93,7 +93,7 @@ export function AdminPanel() {
       ...prev,
       enabled: true,
       issuerUrl: "https://auth.urlxl.com",
-      clientId: "kypasswords",
+      clientId: "kyvaults",
       autoProvision: true,
     }));
   };
@@ -228,7 +228,7 @@ export function AdminPanel() {
               <input
                 type="text"
                 className="input font-mono"
-                placeholder="kypasswords"
+                placeholder="kyvaults"
                 value={ssoSettings.clientId}
                 onChange={(e) => setSsoSettings({ ...ssoSettings, clientId: e.target.value })}
                 required={ssoSettings.enabled}
@@ -266,7 +266,7 @@ export function AdminPanel() {
         <div>
           <section className="field-card" style={{ marginBottom: "1.5rem" }}>
             <h3>SCIM Provisioning</h3>
-            <p>{provisioning?.configured ? "Enabled — provisioning token configured." : "Disabled — set KYPASSWORD_SCIM_TOKEN and restart to enable."}</p>
+            <p>{provisioning?.configured ? "Enabled — provisioning token configured." : "Disabled — set KYVAULT_SCIM_TOKEN and restart to enable."}</p>
             {provisioning ? (
               <label className="input-group">
                 <span className="input-label">SCIM base URL</span>
@@ -279,7 +279,7 @@ export function AdminPanel() {
               Deleting a directory user retains their encrypted vault.
             </p>
             <p style={{ color: "var(--ink-muted)", fontSize: "0.85rem" }}>
-              Existing signed KySignOn replication continues at /api/sync/webhook using the kypassword system type.
+              Existing signed KySignOn replication continues at /api/sync/webhook using the kyvault system type.
             </p>
           </section>
           <div style={{ marginBottom: "1.5rem" }}>

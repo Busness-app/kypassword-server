@@ -79,7 +79,7 @@ export function DevicePairingModal({ onClose }: Props) {
         </div>
 
         <p style={{ color: "var(--ink-muted)", fontSize: "0.9rem", margin: "0 0 1.5rem 0" }}>
-          Scan this QR code with the <strong>KyPasswords Mobile App</strong>, or enter the PIN in your <strong>Browser Extension</strong>.
+          Scan this QR code with the <strong>KyVault Mobile App</strong>, or enter the PIN in your <strong>Browser Extension</strong>.
         </p>
 
         {error ? (

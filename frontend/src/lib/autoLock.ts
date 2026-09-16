@@ -1,6 +1,7 @@
 export const AUTO_LOCK_MINUTES = [1, 5, 15, 30, 60] as const;
 export type AutoLockMinutes = typeof AUTO_LOCK_MINUTES[number];
-const settingKey = "kypassword.autoLockMinutes";
+const settingKey = "kyvault.autoLockMinutes";
+const legacySettingKey = "kypassword.autoLockMinutes";
 
 export function parseAutoLockMinutes(value: unknown): AutoLockMinutes {
   for (const minutes of AUTO_LOCK_MINUTES) {
@@ -10,11 +11,15 @@ export function parseAutoLockMinutes(value: unknown): AutoLockMinutes {
 }
 
 export function loadAutoLockMinutes(): AutoLockMinutes {
-  try { return parseAutoLockMinutes(localStorage.getItem(settingKey)); } catch { return 5; }
+  try {
+    const value = localStorage.getItem(settingKey);
+    return parseAutoLockMinutes(value ?? localStorage.getItem(legacySettingKey));
+  } catch { return 5; }
 }
 
 export function storeAutoLockMinutes(minutes: AutoLockMinutes): void {
   localStorage.setItem(settingKey, String(minutes));
+  localStorage.removeItem(legacySettingKey);
 }
 
 // Wall time catches suspended devices; monotonic time prevents a clock adjustment

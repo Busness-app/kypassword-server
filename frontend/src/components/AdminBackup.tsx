@@ -112,7 +112,7 @@ export function AdminBackup() {
     const href = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = href;
-    anchor.download = "kypassword.kycap";
+    anchor.download = "kyvault.kycap";
     anchor.click();
     URL.revokeObjectURL(href);
     setMessage("Downloaded sealed capsule.");

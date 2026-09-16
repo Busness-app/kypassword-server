@@ -27,7 +27,7 @@ type RecoveryClient interface {
 
 func (c *Client) Claim(ctx context.Context, server, code string) (PairingResult, error) {
 	if err := ValidateURL(server, c.allowPrivate); err != nil {
-		return PairingResult{}, fmt.Errorf("%w: use KYPASSWORD_BACKUP_ALLOW_PRIVATE_RECOVERY only for an intended private HTTPS host: %s", ErrInvalidURL, AuditSafe(err.Error()))
+		return PairingResult{}, fmt.Errorf("%w: use KYVAULT_BACKUP_ALLOW_PRIVATE_RECOVERY only for an intended private HTTPS host: %s", ErrInvalidURL, AuditSafe(err.Error()))
 	}
 	r, err := c.ClaimPairing(ctx, server, code, ServiceName, AppName)
 	if err != nil {

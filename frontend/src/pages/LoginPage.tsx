@@ -19,8 +19,8 @@ export function LoginPage() {
     <div className="auth-container">
       <div className="auth-box">
         <div className="auth-header">
-          <img src="/logo.png" alt="KyPasswords" />
-          <h1>KyPasswords</h1>
+          <img src="/logo.png" alt="KyVault" />
+          <h1>KyVault</h1>
           <p>Zero-Knowledge KeePass Vault &amp; Sync</p>
         </div>
 

@@ -21,7 +21,7 @@ func TestSSOSettingsPersistence(t *testing.T) {
 	newSettings := SSOSettings{
 		Enabled:       true,
 		IssuerURL:     "https://auth.urlxl.com",
-		ClientID:      "kypasswords",
+		ClientID:      "kyvaults",
 		ClientSecret:  "secret-xyz",
 		AutoProvision: true,
 	}
@@ -32,7 +32,7 @@ func TestSSOSettingsPersistence(t *testing.T) {
 
 	reloadedStore := NewStore(dir)
 	loaded := reloadedStore.Load()
-	if !loaded.Enabled || loaded.IssuerURL != "https://auth.urlxl.com" || loaded.ClientID != "kypasswords" {
+	if !loaded.Enabled || loaded.IssuerURL != "https://auth.urlxl.com" || loaded.ClientID != "kyvaults" {
 		t.Errorf("loaded settings mismatch: %+v", loaded)
 	}
 }

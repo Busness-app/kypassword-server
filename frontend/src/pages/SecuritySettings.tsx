@@ -320,7 +320,7 @@ export function SecuritySettings({ user, vaultKey, onUserUpdated, onForgetDevice
           </div>
 
           <p style={{ color: "var(--ink-muted)", fontSize: "0.85rem", marginBottom: "1rem" }}>
-            KySignOn is your only way in to KyPasswords, so this identity cannot be unlinked —
+            KySignOn is your only way in to KyVault, so this identity cannot be unlinked —
             doing so would lock you out for good. Accounts are managed in KySignOn.
           </p>
           <div

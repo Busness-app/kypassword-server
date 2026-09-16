@@ -1,5 +1,5 @@
 # Binaries
-kypassword-server
+kyvault-server
 *.exe
 *.dll
 *.so

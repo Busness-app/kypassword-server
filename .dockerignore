@@ -10,7 +10,7 @@ config
 *.secret
 *.tmp
 *.log
-kypassword-server
+kyvault-server
 .env
 **/.env.*
 !**/.env.example

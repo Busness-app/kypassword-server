@@ -1,6 +1,6 @@
-# Restoring KyPassword from a capsule
+# Restoring KyVault from a capsule
 
-This is the procedure for bringing a KyPassword server back from a `.kycap` backup after the
+This is the procedure for bringing a KyVault server back from a `.kycap` backup after the
 original is gone. It needs three things, held by three different parties by design:
 
 | Thing | Who has it |
@@ -24,7 +24,7 @@ command pins and verifies a digest.
 
 ## What a capsule holds
 
-Everything a fresh KyPassword server needs to be the old one, and nothing that opens a user's
+Everything a fresh KyVault server needs to be the old one, and nothing that opens a user's
 vault:
 
 | Path in the capsule | What it is |
@@ -47,7 +47,7 @@ The restored directory is the live directory in the clear. Treat it like the run
 ## Before you start
 
 - **Pick the capsule.** In the KyRecovery dashboard, open Capsules, find the newest one for
-  service `kypassword` that is not flagged corrupt, and note its `capsule_id`, `created_at`
+  service `kyvault` that is not flagged corrupt, and note its `capsule_id`, `created_at`
   and `digest`. You will compare these after the restore. Download it with an operator session
   (`GET /api/capsules/{id}/download`).
 - **Gather k custodians.** Each card carries one share, a single line beginning `ky2-`. They
@@ -62,7 +62,7 @@ The restored directory is the live directory in the clear. Treat it like the run
 With the binary (from a release, or `go build ./cmd/server`):
 
 ```bash
-kypassword-server restore --capsule cap-kypassword-XXXXXXXX.kycap --to ./restored
+kyvault-server restore --capsule cap-kyvault-XXXXXXXX.kycap --to ./restored
 ```
 
 For a published-image install, and always on a fresh recovery machine, pin the commit you
@@ -76,25 +76,25 @@ in `.env` after the drill: see the README's upgrade note for moving off it.
 
 ```bash
 sha=<full commit sha you intend to run, e.g. $(git rev-parse origin/master)>
-d=$(docker buildx imagetools inspect ghcr.io/busness-app/kypassword-server:$sha --format '{{.Manifest.Digest}}') \
-  && gh attestation verify "oci://ghcr.io/busness-app/kypassword-server@$d" --repo Busness-app/kypassword-server \
-       --cert-identity https://github.com/Busness-app/kypassword-server/.github/workflows/ci.yml@refs/heads/master \
-  && [ "$(gh attestation verify "oci://ghcr.io/busness-app/kypassword-server@$d" --repo Busness-app/kypassword-server \
-       --cert-identity https://github.com/Busness-app/kypassword-server/.github/workflows/ci.yml@refs/heads/master \
+d=$(docker buildx imagetools inspect ghcr.io/busness-app/kyvault-server:$sha --format '{{.Manifest.Digest}}') \
+  && gh attestation verify "oci://ghcr.io/busness-app/kyvault-server@$d" --repo Busness-app/kyvault-server \
+       --cert-identity https://github.com/Busness-app/kyvault-server/.github/workflows/ci.yml@refs/heads/master \
+  && [ "$(gh attestation verify "oci://ghcr.io/busness-app/kyvault-server@$d" --repo Busness-app/kyvault-server \
+       --cert-identity https://github.com/Busness-app/kyvault-server/.github/workflows/ci.yml@refs/heads/master \
        --format json --jq '.[0].verificationResult.statement.predicate.buildDefinition.resolvedDependencies[0].digest.gitCommit')" = "$sha" ] \
-  && (umask 077; t=$(mktemp ./.env.XXXXXX) && touch .env && { grep -v '^KYPASSWORD_IMAGE=' .env || [ $? -eq 1 ]; } > "$t" \
-      && echo "KYPASSWORD_IMAGE=ghcr.io/busness-app/kypassword-server@$d" >> "$t" && mv "$t" .env) \
-  && grep -qxF "KYPASSWORD_IMAGE=ghcr.io/busness-app/kypassword-server@$d" .env
+  && (umask 077; t=$(mktemp ./.env.XXXXXX) && touch .env && { grep -v '^KYVAULT_IMAGE=' .env || [ $? -eq 1 ]; } > "$t" \
+      && echo "KYVAULT_IMAGE=ghcr.io/busness-app/kyvault-server@$d" >> "$t" && mv "$t" .env) \
+  && grep -qxF "KYVAULT_IMAGE=ghcr.io/busness-app/kyvault-server@$d" .env
 ```
 
 Then, in the same shell (the check compares against `$d`), refuse to go on unless the image in
-effect is exactly that digest. A source install passes on its `kypassword-server:local` build instead,
+effect is exactly that digest. A source install passes on its `kyvault-server:local` build instead,
 since `docker-compose.build.yml` wins over the pin, which is what a source install wants. The
 two refusal messages are distinct on purpose: a broken invocation is not an unpinned image.
 
 ```bash
 imgs=$(docker compose config --images) || { echo 'refusing: compose could not resolve the image'; false; }
-printf '%s\n' "$imgs" | grep -qxF "ghcr.io/busness-app/kypassword-server@$d" || printf '%s\n' "$imgs" | grep -qxF 'kypassword-server:local' \
+printf '%s\n' "$imgs" | grep -qxF "ghcr.io/busness-app/kyvault-server@$d" || printf '%s\n' "$imgs" | grep -qxF 'kyvault-server:local' \
   || { echo "refusing: image in effect is '$imgs', not the digest verified above"; false; }
 ```
 
@@ -107,9 +107,9 @@ subcommand goes straight after the service name; `--no-deps` keeps the real serv
 ```bash
 mkdir -m 700 restored
 docker compose run --rm --no-deps --user "$(id -u):$(id -g)" \
-  -v "$PWD/cap-kypassword-XXXXXXXX.kycap:/in.kycap:ro" \
+  -v "$PWD/cap-kyvault-XXXXXXXX.kycap:/in.kycap:ro" \
   -v "$PWD/restored:/restored" \
-  kypassword-server restore --capsule /in.kycap --to /restored
+  kyvault-server restore --capsule /in.kycap --to /restored
 ```
 
 The command prompts:
@@ -125,14 +125,14 @@ Only for a rehearsal with synthetic test shares, never with real cards, stdin ca
 Delete it afterwards; a file holding k shares is the suite key in a file.
 
 ```bash
-kypassword-server restore --capsule cap-kypassword-XXXXXXXX.kycap --to ./restored < test-shares.txt
+kyvault-server restore --capsule cap-kyvault-XXXXXXXX.kycap --to ./restored < test-shares.txt
 ```
 
 After extraction and product checks pass it prints authenticated capsule details:
 
 ```
-Restored 12 files from capsule cap-kypassword-1788574282596580928
-  service:      kypassword (v1.2.0)
+Restored 12 files from capsule cap-kyvault-1788574282596580928
+  service:      kyvault (v1.2.0)
   created:      2026-09-05T02:11:22Z
   recovery key: fe8af276...
   payload hash: e059a268...
@@ -147,7 +147,7 @@ Failures you may see, and what they mean:
 
 | Message | Meaning |
 |---|---|
-| `capsule is for service ... this instance is kypassword` | The file is a capsule from another suite product. Check which service you downloaded |
+| `capsule is for service ... this instance is kyvault` | The file is a capsule from another suite product. Legacy `kypassword` capsules are accepted and reported explicitly; another service name is rejected |
 | `not a recognised capsule container` | The file is not a `.kycap` at all: truncated download or the wrong file |
 | `shamir: need at least 2 shares` | Input ended before k lines were read. Check for a missed line |
 | `shamir: share is not index-hex: checksum "6fax", expected "6fa6"` | One character on a card was mistyped. The checksum tells you which share to re-enter |
@@ -181,7 +181,7 @@ servers mixed into one.
 
 ```bash
 docker compose down
-docker compose run --rm --no-deps --entrypoint sh kypassword-server \
+docker compose run --rm --no-deps --entrypoint sh kyvault-server \
   -c 'ls -A /kypassword/config | wc -l; ls -A /kypassword/data | wc -l'
 ```
 
@@ -193,7 +193,7 @@ as root, because the image's user cannot write a directory it does not own:
 ```bash
 mkdir -m 700 old-config old-data
 docker compose run --rm --no-deps --user root \
-  -v "$PWD/old-config:/outc" -v "$PWD/old-data:/outd" --entrypoint sh kypassword-server \
+  -v "$PWD/old-config:/outc" -v "$PWD/old-data:/outd" --entrypoint sh kyvault-server \
   -c 'cp -a /kypassword/config/. /outc/ && cp -a /kypassword/data/. /outd/ && ls -A /outc /outd | wc -l'
 ```
 
@@ -205,7 +205,7 @@ Only with the copy confirmed, remove the volumes. This is irreversible:
 
 ```bash
 docker compose down -v
-docker compose run --rm --no-deps --entrypoint sh kypassword-server \
+docker compose run --rm --no-deps --entrypoint sh kyvault-server \
   -c 'ls -A /kypassword/config | wc -l; ls -A /kypassword/data | wc -l'
 ```
 
@@ -213,7 +213,7 @@ With `0` and `0` confirmed, copy the restored files in and start:
 
 ```bash
 docker compose run --rm --no-deps --user root --entrypoint sh \
-  -v "$PWD/restored/config:/fromc:ro" -v "$PWD/restored/data:/fromd:ro" kypassword-server \
+  -v "$PWD/restored/config:/fromc:ro" -v "$PWD/restored/data:/fromd:ro" kyvault-server \
   -c 'cp -a /fromc/. /kypassword/config/ && cp -a /fromd/. /kypassword/data/ && chown -R kypassword:kypassword /kypassword/config /kypassword/data'
 docker compose up -d
 ```
@@ -221,8 +221,8 @@ docker compose up -d
 The one-off container mounts the same volumes the service uses, so the copy lands where the
 server will read it, owned by the image's `kypassword` user.
 
-Keep the KySignOn settings identical to the old deployment. `KYPASSWORD_OIDC_ISSUER`,
-`KYPASSWORD_OIDC_CLIENT_ID` and `KYPASSWORD_OIDC_CLIENT_SECRET` in `.env` override
+Keep the KySignOn settings identical to the old deployment. `KYVAULT_OIDC_ISSUER`,
+`KYVAULT_OIDC_CLIENT_ID` and `KYVAULT_OIDC_CLIENT_SECRET` in `.env` override
 `config/sso.json` when set; either keep supplying the same values or unset them so the
 restored file is read. The same applies to `PAIRING_SECRET` and `AUDIT_KEY` against
 `config/pairing.secret` and `config/audit.key`. Never print a key to a terminal or type one on
@@ -252,7 +252,7 @@ The restore proves the service works. It does not make the restored state curren
 Everything comes back as of the capsule's `created_at`: users, devices, vault contents,
 history, and the audit log. Anything changed after that moment is undone.
 
-1. Sessions are already gone. KyPassword keeps sessions in memory only, so the restart in
+1. Sessions are already gone. KyVault keeps sessions in memory only, so the restart in
    Step 3 signed everyone out; nobody holds a cookie the restored server accepts.
 2. Walk the old audit log in `old-data/audit/audit.jsonl` from `created_at` to the moment the
    old server was lost (the restored log stops at `created_at`), and re-apply what happened
@@ -271,16 +271,16 @@ history, and the audit log. Anything changed after that moment is undone.
 
    Rotate these, in order:
 
-   - **The KySignOn client secret.** Issue a new secret for the KyPassword client in KySignOn
+   - **The KySignOn client secret.** Issue a new secret for the KyVault client in KySignOn
      and put it in `.env` (or `config/sso.json` if the environment does not set it), then
      `docker compose up -d`.
    - **The replication secret.** Stop the server, remove `config/pairing.secret`, start; a new
-     one is generated. Then give KySignOn the new value for its KyPassword replication target.
+     one is generated. Then give KySignOn the new value for its KyVault replication target.
      If `PAIRING_SECRET` is set in `.env`, replace it there instead.
 
      ```bash
      docker compose down
-     docker compose run --rm --no-deps --user root --entrypoint sh kypassword-server \
+     docker compose run --rm --no-deps --user root --entrypoint sh kyvault-server \
        -c 'rm /kypassword/config/pairing.secret && ls -A /kypassword/config'
      docker compose up -d
      ```
@@ -311,5 +311,5 @@ history, and the audit log. Anything changed after that moment is undone.
 
 Run Steps 1 and 2 against the latest capsule on a scratch machine once a quarter, with the
 real custodians and their real cards, and then delete the output. The in-app drill and
-`kypassword-server backup-drill` prove the capsule format restores; only this proves the
+`kyvault-server backup-drill` prove the capsule format restores; only this proves the
 cards do.

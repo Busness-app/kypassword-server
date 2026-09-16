@@ -1,6 +1,6 @@
-## KyPassword
+## KyVault
 
-KyPassword is a Docker-based, self-hosted KeePass management and synchronization
+KyVault is a Docker-based, self-hosted KeePass management and synchronization
 server designed to run alongside KyPost-Net behind the same reverse proxy.
 
 ### Security model
@@ -35,7 +35,7 @@ server designed to run alongside KyPost-Net behind the same reverse proxy.
   beside the KDBX. Metadata must not contain plaintext keys or secrets.
 - Mobile applications use KyPost's existing QR-code key-sealing method. Reuse
   its API where practical; in phase 2, extract that API into a repository shared
-  by KyPost and KyPassword if its dependencies and boundaries permit it.
+  by KyPost and KyVault if its dependencies and boundaries permit it.
 - Logout deletes local key files. Device loss is handled by revoking the device,
   deleting its server-side envelope, and wiping local key files when the device
   next connects. Local browser storage and memory deletion are best-effort.

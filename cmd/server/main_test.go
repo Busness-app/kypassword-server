@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/Busness-app/kypassword-server/internal/backup"
+	"github.com/Busness-app/kyvault-server/internal/backup"
 	"testing"
 	"time"
 )
@@ -23,7 +23,7 @@ func TestBackupDepositInterval(t *testing.T) {
 		{"9000h", 0, true},
 	}
 	for _, test := range tests {
-		t.Setenv("KYPASSWORD_BACKUP_DEPOSIT_INTERVAL", test.value)
+		t.Setenv("KYVAULT_BACKUP_DEPOSIT_INTERVAL", test.value)
 		cfg, err := backup.ConfigFromEnv()
 		got := cfg.Interval
 		if (err != nil) != test.bad || !test.bad && got != test.want {

@@ -66,4 +66,4 @@ jobs:
       - name: Explain the failure
         if: failure()
         run: |
-          echo "::error::EARLY WARNING, NOT A MERGE GATE. Your pull request did not cause this. kypassword-server no longer builds or tests against the ky-primitives default branch, so the next version bump will break it. Fix it here, or in ky-primitives, before that bump -- no branch in this repository is blocked in the meantime."
+          echo "::error::EARLY WARNING, NOT A MERGE GATE. Your pull request did not cause this. kyvault-server no longer builds or tests against the ky-primitives default branch, so the next version bump will break it. Fix it here, or in ky-primitives, before that bump -- no branch in this repository is blocked in the meantime."

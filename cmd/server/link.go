@@ -7,31 +7,31 @@ import (
 	"io"
 	"os"
 
-	"github.com/Busness-app/kypassword-server/internal/users"
+	"github.com/Busness-app/kyvault-server/internal/users"
 )
 
 // Migration subcommands. They exist because the operator cannot sign in to fix an
 // unlinked account: KySignOn is the only way in, and the server refuses to start until
 // every active account has a KySignOn identity. So these work with no session, no
 // network and no SSO configured — they edit users.json and nothing else.
-const migrationUsage = `KyPassword migration commands:
+const migrationUsage = `KyVault migration commands:
 
-  kypassword-server link-sso --username <name> --sub <kysignon-user-id>
+  kyvault-server link-sso --username <name> --sub <kysignon-user-id>
         Bind a local account to its KySignOn identity.
 
-  kypassword-server deactivate --username <name>
+  kyvault-server deactivate --username <name>
         Retire an account that has no KySignOn identity. Its vault is kept.
 
-  kypassword-server backup-drill
+  kyvault-server backup-drill
         Seal and open a throwaway recovery capsule, then validate its contents.
 
-  kypassword-server export-capsule [--out <path>]
+  kyvault-server export-capsule [--out <path>]
         Write a recovery-key-sealed capsule without overwriting an existing file.
 
-  kypassword-server deposit
+  kyvault-server deposit
         Seal and upload a capsule to the paired KyRecovery service.
 
-  kypassword-server restore --capsule <path> --to <empty-directory>
+  kyvault-server restore --capsule <path> --to <empty-directory>
         Restore a capsule using custodian shares read from standard input.
 
 The KySignOn user ID is the value shown in the KySignOn admin user list, and is the
@@ -61,7 +61,7 @@ func runMigrationCommand(args []string, out io.Writer) (handled bool, err error)
 func runLinkSSO(configDir string, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("link-sso", flag.ContinueOnError)
 	fs.SetOutput(out)
-	username := fs.String("username", "", "the local KyPassword account to link")
+	username := fs.String("username", "", "the local KyVault account to link")
 	sub := fs.String("sub", "", "the KySignOn user ID, which is the OIDC subject")
 	email := fs.String("email", "", "optional: the account's address in KySignOn")
 	if err := fs.Parse(args); err != nil {
@@ -98,7 +98,7 @@ func runLinkSSO(configDir string, args []string, out io.Writer) error {
 func runDeactivate(configDir string, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("deactivate", flag.ContinueOnError)
 	fs.SetOutput(out)
-	username := fs.String("username", "", "the local KyPassword account to retire")
+	username := fs.String("username", "", "the local KyVault account to retire")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}

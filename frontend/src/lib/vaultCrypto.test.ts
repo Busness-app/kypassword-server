@@ -104,7 +104,7 @@ describe("envelope key derivation is pinned", () => {
 
 describe("KyAuth compatibility", () => {
   test("still reads a legacy PBKDF2 envelope", async () => {
-    // KyAuth's KyPasswordEnvelopeCrypto still writes PBKDF2-HMAC-SHA256 envelopes, so we
+    // KyAuth's KyVaultEnvelopeCrypto still writes PBKDF2-HMAC-SHA256 envelopes, so we
     // must keep reading them until it ships the Argon2id change. An envelope with no
     // `kdf` field is PBKDF2 by definition. Delete this path only once KyAuth no longer
     // writes them.

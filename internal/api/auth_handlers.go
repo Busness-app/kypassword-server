@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/Busness-app/ky-primitives/oidcverify"
-	"github.com/Busness-app/kypassword-server/internal/sso"
-	"github.com/Busness-app/kypassword-server/internal/users"
+	"github.com/Busness-app/kyvault-server/internal/sso"
+	"github.com/Busness-app/kyvault-server/internal/users"
 )
 
 const ssoCookieName = "kypass_sso_state"
@@ -222,7 +222,7 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 
 	if user.ID == "" {
 		if !settings.AutoProvision {
-			http.Error(w, "Access denied: SSO identity not linked to any KyPassword account.", http.StatusForbidden)
+			http.Error(w, "Access denied: SSO identity not linked to any KyVault account.", http.StatusForbidden)
 			return
 		}
 
@@ -346,7 +346,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request, u users.Us
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":  "ok",
-		"service": "kypassword-server",
+		"service": "kyvault-server",
 		"time":    time.Now().UTC().Format(time.RFC3339),
 	})
 }

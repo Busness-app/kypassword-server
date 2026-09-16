@@ -15,13 +15,19 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Busness-app/kypassword-server/internal/api"
-	"github.com/Busness-app/kypassword-server/internal/backup"
-	"github.com/Busness-app/kypassword-server/internal/sso"
-	"github.com/Busness-app/kypassword-server/internal/users"
+	"github.com/Busness-app/kyvault-server/internal/api"
+	"github.com/Busness-app/kyvault-server/internal/backup"
+	"github.com/Busness-app/kyvault-server/internal/sso"
+	"github.com/Busness-app/kyvault-server/internal/users"
 )
 
 func main() {
+	if names := sso.LegacyEnvironment(); len(names) > 0 {
+		for _, name := range names {
+			log.Printf("legacy environment variable %s is unsupported; use %s", name, sso.KyVaultEnvironmentName(name))
+		}
+		log.Fatal("refusing to start with legacy KYPASSWORD_* environment variables")
+	}
 	if handled, err := runMigrationCommand(os.Args[1:], os.Stdout); handled {
 		if err != nil {
 			log.Fatalf("%v", err)
@@ -57,7 +63,7 @@ func main() {
 	}
 	backupConfig, err := backup.ConfigFromEnv()
 	if err != nil {
-		log.Fatalf("KYPASSWORD_BACKUP_DEPOSIT_INTERVAL: %v", err)
+		log.Fatalf("KYVAULT_BACKUP_DEPOSIT_INTERVAL: %v", err)
 	}
 
 	pairingSecret := os.Getenv("PAIRING_SECRET")
@@ -81,7 +87,7 @@ func main() {
 		DataDir:       dataDir,
 		ConfigDir:     configDir,
 		PairingSecret: pairingSecret,
-		SCIMToken:     os.Getenv("KYPASSWORD_SCIM_TOKEN"),
+		SCIMToken:     os.Getenv("KYVAULT_SCIM_TOKEN"),
 		RetentionDays: retentionDays,
 		AppVersion:    buildVersion(),
 		Backup:        backupConfig,
@@ -122,7 +128,7 @@ func main() {
 		rootMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path == "/" {
 				w.Header().Set("Content-Type", "text/html; charset=utf-8")
-				_, _ = w.Write([]byte(`<!DOCTYPE html><html><head><title>KyPassword Server</title></head><body style="background:#0d0f14;color:#4deeea;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;"><div><h1>KyPassword Server</h1><p style="color:#888;">API Daemon Running on Port ` + port + `</p></div></body></html>`))
+				_, _ = w.Write([]byte(`<!DOCTYPE html><html><head><title>KyVault Server</title></head><body style="background:#0d0f14;color:#4deeea;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;"><div><h1>KyVault Server</h1><p style="color:#888;">API Daemon Running on Port ` + port + `</p></div></body></html>`))
 				return
 			}
 			http.NotFound(w, r)
@@ -138,7 +144,7 @@ func main() {
 	}
 
 	go func() {
-		log.Printf("KyPassword server listening on :%s (data: %s, config: %s)", port, dataDir, configDir)
+		log.Printf("KyVault server listening on :%s (data: %s, config: %s)", port, dataDir, configDir)
 		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("http server failed: %v", err)
 		}
@@ -165,7 +171,7 @@ func main() {
 	<-sigChan
 	stopScheduler()
 
-	log.Println("shutting down KyPassword server gracefully...")
+	log.Println("shutting down KyVault server gracefully...")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = httpServer.Shutdown(ctx)
@@ -197,12 +203,12 @@ func requireMigratedAccounts(configDir string) {
 		return
 	}
 
-	log.Printf("KyPassword now authenticates only through KySignOn, and %d active account(s) have no KySignOn identity:", len(unlinked))
+	log.Printf("KyVault now authenticates only through KySignOn, and %d active account(s) have no KySignOn identity:", len(unlinked))
 	for _, u := range unlinked {
 		log.Printf("  - %s (id %s)", u.Username, u.ID)
 	}
-	log.Printf("Link each one:      kypassword-server link-sso --username <name> --sub <kysignon-user-id>")
-	log.Printf("Or retire it:       kypassword-server deactivate --username <name>")
+	log.Printf("Link each one:      kyvault-server link-sso --username <name> --sub <kysignon-user-id>")
+	log.Printf("Or retire it:       kyvault-server deactivate --username <name>")
 	log.Printf("The KySignOn user ID is the value shown in its admin user list, and is the same value it puts in the OIDC 'sub' claim.")
 	os.Exit(1)
 }
@@ -228,10 +234,10 @@ func requireIdentityProvider(configDir string) {
 		return
 	}
 
-	log.Printf("KyPassword authenticates only through KySignOn, and no identity provider is configured.")
+	log.Printf("KyVault authenticates only through KySignOn, and no identity provider is configured.")
 	log.Printf("Set these and restart:")
 	log.Printf("  %s        e.g. https://signon.example.com", sso.EnvIssuer)
-	log.Printf("  %s     the client ID KySignOn issued for KyPassword", sso.EnvClientID)
+	log.Printf("  %s     the client ID KySignOn issued for KyVault", sso.EnvClientID)
 	log.Printf("  %s the matching client secret, required for a confidential client", sso.EnvClientSecret)
 	log.Printf("Optional: %s, %s (defaults to true).", sso.EnvRedirectURI, sso.EnvAutoProvision)
 	log.Printf("These take precedence over %s/sso.json and cannot be changed from the admin UI.", configDir)

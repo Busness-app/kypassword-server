@@ -116,7 +116,7 @@ export class KeePassVault {
   }
 
   // Create a new blank KDBX v4 vault encrypted with the random 256-bit vaultKey
-  public static async createNew(vaultKey: Uint8Array, vaultName = "KyPasswords Vault"): Promise<KeePassVault> {
+  public static async createNew(vaultKey: Uint8Array, vaultName = "KyVault Vault"): Promise<KeePassVault> {
     const cred = KeePassVault.credentialFor(vaultKey);
     const db = Kdbx.create(cred, vaultName);
 

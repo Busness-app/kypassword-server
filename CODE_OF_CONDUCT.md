@@ -1,12 +1,12 @@
 # Code of Conduct
 
-KyPassword handles other people's passwords. Getting
+KyVault handles other people's passwords. Getting
 that right takes people who disagree with each other in public and keep showing
 up anyway. This document exists so that disagreement stays about the work.
 
 ## Our Commitment
 
-Everyone who contributes to KyPassword — code, documentation, bug reports, security
+Everyone who contributes to KyVault — code, documentation, bug reports, security
 findings, translations, or a question in an issue — is welcome here regardless
 of age, body size, visible or invisible disability, ethnicity, sex
 characteristics, gender identity and expression, level of experience,
@@ -104,7 +104,7 @@ someone else, and you may report an incident you witnessed but were not the
 target of.
 
 **Security vulnerabilities are not a Code of Conduct matter.** Report those
-through [GitHub Security Advisories](https://github.com/Busness-app/kypassword-server/security/advisories),
+through [GitHub Security Advisories](https://github.com/Busness-app/kyvault-server/security/advisories),
 as described in [SECURITY.md](SECURITY.md).
 
 ## Enforcement

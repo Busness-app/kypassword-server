@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Busness-app/kypassword-server/internal/users"
+	"github.com/Busness-app/kyvault-server/internal/users"
 )
 
 func seedUsers(t *testing.T, body string) string {

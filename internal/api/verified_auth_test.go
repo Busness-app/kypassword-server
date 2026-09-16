@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/Busness-app/ky-primitives/syncauth"
-	"github.com/Busness-app/kypassword-server/internal/sso"
+	"github.com/Busness-app/kyvault-server/internal/sso"
 )
 
 func TestOIDCCallbackRejectsUnverifiedClaims(t *testing.T) {
@@ -35,7 +35,7 @@ func TestOIDCCallbackRejectsUnverifiedClaims(t *testing.T) {
 			}
 			idp := mockIdP(t, claims)
 			srv.oidcHTTP = idp.Client()
-			if e := srv.ssoStore.Save(sso.SSOSettings{Enabled: true, IssuerURL: idp.URL, ClientID: "kypassword-app", AutoProvision: true}); e != nil {
+			if e := srv.ssoStore.Save(sso.SSOSettings{Enabled: true, IssuerURL: idp.URL, ClientID: "kyvault-app", AutoProvision: true}); e != nil {
 				t.Fatal(e)
 			}
 			rec := driveSSOCallback(t, srv)
@@ -72,7 +72,7 @@ func TestOIDCStateIsSingleUseAndConfigurationBound(t *testing.T) {
 	srv := newTestServer(t)
 	idp := mockIdP(t, map[string]any{"sub": "x", "role": "admin"})
 	srv.oidcHTTP = idp.Client()
-	settings := sso.SSOSettings{Enabled: true, IssuerURL: idp.URL, ClientID: "kypassword-app", AutoProvision: true}
+	settings := sso.SSOSettings{Enabled: true, IssuerURL: idp.URL, ClientID: "kyvault-app", AutoProvision: true}
 	if e := srv.ssoStore.Save(settings); e != nil {
 		t.Fatal(e)
 	}
@@ -106,7 +106,7 @@ func TestVerifiedLoginMeetsFreshBackupGate(t *testing.T) {
 	srv := newTestServer(t)
 	idp := mockIdP(t, map[string]any{"sub": "admin-sub", "preferred_username": "admin", "role": "admin"})
 	srv.oidcHTTP = idp.Client()
-	if e := srv.ssoStore.Save(sso.SSOSettings{Enabled: true, IssuerURL: idp.URL, ClientID: "kypassword-app", AutoProvision: true}); e != nil {
+	if e := srv.ssoStore.Save(sso.SSOSettings{Enabled: true, IssuerURL: idp.URL, ClientID: "kyvault-app", AutoProvision: true}); e != nil {
 		t.Fatal(e)
 	}
 	w := driveSSOCallback(t, srv)
@@ -242,7 +242,7 @@ func TestOIDCExpiredStateAndLinkCookieCannotChangeIdentity(t *testing.T) {
 	srv := newTestServer(t)
 	idp := mockIdP(t, map[string]any{"sub": "new-sub", "preferred_username": "new"})
 	srv.oidcHTTP = idp.Client()
-	if e := srv.ssoStore.Save(sso.SSOSettings{Enabled: true, IssuerURL: idp.URL, ClientID: "kypassword-app", AutoProvision: true}); e != nil {
+	if e := srv.ssoStore.Save(sso.SSOSettings{Enabled: true, IssuerURL: idp.URL, ClientID: "kyvault-app", AutoProvision: true}); e != nil {
 		t.Fatal(e)
 	}
 	cookie, nonce := beginOIDCTest(t, srv)
@@ -273,7 +273,7 @@ func TestOIDCRefreshesRotatedSigningKey(t *testing.T) {
 	claims := map[string]any{"sub": "rotation-sub", "preferred_username": "rotate"}
 	idp := mockIdP(t, claims)
 	srv.oidcHTTP = idp.Client()
-	if e := srv.ssoStore.Save(sso.SSOSettings{Enabled: true, IssuerURL: idp.URL, ClientID: "kypassword-app", AutoProvision: true}); e != nil {
+	if e := srv.ssoStore.Save(sso.SSOSettings{Enabled: true, IssuerURL: idp.URL, ClientID: "kyvault-app", AutoProvision: true}); e != nil {
 		t.Fatal(e)
 	}
 	if w := driveSSOCallback(t, srv); w.Code != 302 {
@@ -290,7 +290,7 @@ func TestOIDCLoginSurvivesPendingAttemptFlood(t *testing.T) {
 	srv := newTestServer(t)
 	idp := mockIdP(t, map[string]any{"sub": "flood-survivor"})
 	srv.oidcHTTP = idp.Client()
-	if err := srv.ssoStore.Save(sso.SSOSettings{Enabled: true, IssuerURL: idp.URL, ClientID: "kypassword-app", AutoProvision: true}); err != nil {
+	if err := srv.ssoStore.Save(sso.SSOSettings{Enabled: true, IssuerURL: idp.URL, ClientID: "kyvault-app", AutoProvision: true}); err != nil {
 		t.Fatal(err)
 	}
 	first, _ := beginOIDCTest(t, srv)
@@ -317,9 +317,9 @@ func TestOIDCTrailingSlashIssuer(t *testing.T) {
 			srv.oidcHTTP = idp.Client()
 			if env {
 				t.Setenv(sso.EnvIssuer, idp.URL+"/")
-				t.Setenv(sso.EnvClientID, "kypassword-app")
+				t.Setenv(sso.EnvClientID, "kyvault-app")
 				t.Setenv(sso.EnvClientSecret, "synthetic")
-			} else if err := srv.ssoStore.Save(sso.SSOSettings{Enabled: true, IssuerURL: idp.URL + "/", ClientID: "kypassword-app", AutoProvision: true}); err != nil {
+			} else if err := srv.ssoStore.Save(sso.SSOSettings{Enabled: true, IssuerURL: idp.URL + "/", ClientID: "kyvault-app", AutoProvision: true}); err != nil {
 				t.Fatal(err)
 			}
 			w := driveSSOCallback(t, srv)
